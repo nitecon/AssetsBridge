@@ -56,9 +56,13 @@ struct FExportAsset
 {
 	GENERATED_BODY()
 
-	/** mesh pointer for it will be set here. */
+	/** mesh pointer for it will be set here (runtime only, not serialized to JSON). */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Assets Bridge|Object Details")
+	UObject* ModelPtr = nullptr;
+
+	/** Full path to the model asset - matches JSON 'model' field for serialization. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
-	UObject* Model = nullptr;
+	FString Model = "";
 
 	/** unique object identifier */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
@@ -84,11 +88,15 @@ struct FExportAsset
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FString ExportLocation = "";
 
-	/** Location of where to export. */
+	/** Mesh type: StaticMesh or SkeletalMesh */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FString StringType = "StaticMesh";
 
-	/** Location of where to export. */
+	/** Path to skeleton asset (for skeletal meshes only) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
+	FString Skeleton = "";
+
+	/** World transform data */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FWorldData WorldData = FWorldData();
 };
@@ -284,33 +292,10 @@ public:
 	                      FString& OutMessage);
 
 	/**
-	* Gets the Assets Bridge location related to this setting.
-	*
-	* @param OutContentLocation Is set to the location for this setting to be consumed by blueprints etc.
-	*/
-	UFUNCTION(BlueprintCallable, Category="Assets Bridge Settings")
-	static void GetContentBrowserRoot(FString& OutContentLocation);
-
-	/**
-	* Gets the Assets Bridge location related to this setting.
-	*
-	* @return provides the location for this setting .
-	*/
-	static FString GetContentBrowserRoot();
-
-	/**
 	 * Returns the user selected list of items to be exported or interacted with, returns only items that are static meshes or skeletal meshes.
 	 */
 	UFUNCTION(BlueprintCallable, Category="AssetsBridge Utilities")
 	static TArray<AActor*> GetWorldSelection();
-
-	/**
-	* Sets the Assets Bridge config option for the related setting.
-	*
-	* @param InLocation Sets the provided string to the value of the content location.
-	*/
-	UFUNCTION(BlueprintCallable, Category="Assets Bridge Settings")
-	static void SetContentBrowserRoot(FString InLocation);
 
 	/**
 	* Gets the Assets Bridge location related to this setting.
@@ -383,7 +368,8 @@ public:
 	template <typename T>
 	static FString EnumToString(const FString& enumName, const T value)
 	{
-		UEnum* pEnum = FindObject<UEnum>(ANY_PACKAGE, *enumName);
+		// ANY_PACKAGE deprecated in UE5 - use FindFirstObject instead
+		UEnum* pEnum = FindFirstObject<UEnum>(*enumName, EFindFirstObjectOptions::NativeFirst);
 		return *(pEnum ? pEnum->GetNameStringByIndex(static_cast<uint8>(value)) : "null");
 	}
 };

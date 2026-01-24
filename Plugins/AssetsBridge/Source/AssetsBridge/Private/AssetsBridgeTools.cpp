@@ -41,7 +41,20 @@ FBridgeExport UAssetsBridgeTools::ReadBridgeExportFile(bool& bIsSuccessful, FStr
 {
 	FString AssetBase;
 	GetExportRoot(AssetBase);
-	FString JsonFilePath = FPaths::Combine(AssetBase, "AssetBridge.json");
+	// Read from Blender's export file (bidirectional: Blender writes from-blender.json, Unreal reads it)
+	FString JsonFilePath = FPaths::Combine(AssetBase, "from-blender.json");
+	
+	// Fallback to legacy file if new format doesn't exist
+	if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*JsonFilePath))
+	{
+		FString LegacyPath = FPaths::Combine(AssetBase, "AssetBridge.json");
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*LegacyPath))
+		{
+			JsonFilePath = LegacyPath;
+			UE_LOG(LogTemp, Warning, TEXT("Using legacy AssetBridge.json - consider updating Blender addon to use from-blender.json"));
+		}
+	}
+	
 	// Try to read generic text into json object
 	TSharedPtr<FJsonObject> JSONObject = ReadJson(JsonFilePath, bIsSuccessful, OutMessage);
 	{
@@ -58,7 +71,7 @@ FBridgeExport UAssetsBridgeTools::ReadBridgeExportFile(bool& bIsSuccessful, FStr
 		return FBridgeExport();
 	}
 	bIsSuccessful = true;
-	OutMessage = FString::Printf(TEXT("Operation Succeded"));
+	OutMessage = FString::Printf(TEXT("Read %d objects from %s"), ReturnData.Objects.Num(), *JsonFilePath);
 	return ReturnData;
 }
 
@@ -71,11 +84,17 @@ void UAssetsBridgeTools::WriteBridgeExportFile(FBridgeExport Data, bool& bIsSucc
 		OutMessage = FString::Printf(TEXT("Invalid struct received, cannot convert to json"));
 		return;
 	}
-	FString BridgeName = "AssetBridge.json";
+	// Write to Unreal's export file (bidirectional: Unreal writes from-unreal.json, Blender reads it)
+	FString BridgeName = "from-unreal.json";
 	FString AssetBase;
 	GetExportRoot(AssetBase);
 	FString JsonFilePath = FPaths::Combine(AssetBase, BridgeName);
 	WriteJson(JsonFilePath, JsonObject, bIsSuccessful, OutMessage);
+	
+	if (bIsSuccessful)
+	{
+		OutMessage = FString::Printf(TEXT("Exported %d objects to %s"), Data.Objects.Num(), *JsonFilePath);
+	}
 }
 
 bool UAssetsBridgeTools::ContentBrowserFromWorldSelection()
@@ -274,24 +293,6 @@ void UAssetsBridgeTools::WriteJson(FString FilePath, TSharedPtr<FJsonObject> Jso
 	OutMessage = FString::Printf(TEXT("wrote json to file: %s"), *FilePath);
 }
 
-void UAssetsBridgeTools::GetContentBrowserRoot(FString& OutContentLocation)
-{
-	UABSettings* Settings = GetMutableDefault<UABSettings>();
-	if (Settings != nullptr)
-	{
-		OutContentLocation = Settings->UnrealContentLocation;
-	}
-}
-
-FString UAssetsBridgeTools::GetContentBrowserRoot()
-{
-	UABSettings* Settings = GetMutableDefault<UABSettings>();
-	if (Settings != nullptr)
-	{
-		return Settings->UnrealContentLocation;
-	}
-	return FString();
-}
 
 TArray<AActor*> UAssetsBridgeTools::GetWorldSelection()
 {
@@ -311,15 +312,6 @@ TArray<AActor*> UAssetsBridgeTools::GetWorldSelection()
 	return OutActors;
 }
 
-void UAssetsBridgeTools::SetContentBrowserRoot(FString InLocation)
-{
-	UABSettings* Settings = GetMutableDefault<UABSettings>();
-	if (Settings != nullptr)
-	{
-		Settings->UnrealContentLocation = InLocation;
-		Settings->SaveConfig();
-	}
-}
 
 void UAssetsBridgeTools::GetExportRoot(FString& OutContentLocation)
 {
@@ -358,9 +350,11 @@ FString UAssetsBridgeTools::GetPathWithoutExt(FString InPath)
 
 FString UAssetsBridgeTools::GetSystemPathAsAssetPath(FString Path)
 {
+	// Clean up virtual path prefixes, keep as content-relative path
 	FString LocalPath = Path.Replace(TEXT("/All"), TEXT("")).Replace(TEXT("/Game"), TEXT(""));
-	FString ContentPath = GetContentBrowserRoot();
-	FString ObjectPath = FPaths::Combine(ContentPath, LocalPath);
+	// Convert to actual disk path under project Content directory
+	FString ContentDir = FPaths::ProjectContentDir();
+	FString ObjectPath = FPaths::Combine(ContentDir, LocalPath);
 	return ObjectPath;
 }
 
@@ -423,7 +417,8 @@ FExportAsset UAssetsBridgeTools::GetExportInfo(FAssetData AssetInfo, bool& bIsSu
 	FString Discard;
 	FPaths::Split(AssetInfo.GetObjectPathString(), BasePath, ShortName, Discard);
 	FString RelativeContentPath = BasePath.Replace(TEXT("/Game"), TEXT(""));
-	Result.Model = AssetInfo.GetAsset();
+	Result.ModelPtr = AssetInfo.GetAsset();
+	Result.Model = AssetInfo.GetObjectPathString();  // Store full path for reimport
 	Result.ShortName = ShortName;
 	FString FileName = ShortName.Append(".fbx");
 	FString ExportLoc = FPaths::Combine(AssetPath, RelativeContentPath, FileName);
@@ -431,37 +426,46 @@ FExportAsset UAssetsBridgeTools::GetExportInfo(FAssetData AssetInfo, bool& bIsSu
 	Result.InternalPath = RelativeContentPath;
 
 	Result.RelativeExportPath = RelativeContentPath;
-	UStaticMesh* StaticMesh = Cast<UStaticMesh>(Result.Model);
+	UStaticMesh* StaticMesh = Cast<UStaticMesh>(Result.ModelPtr);
 	if (StaticMesh != nullptr)
 	{
 		Result.StringType = "StaticMesh";
 		TArray<FStaticMaterial> Materials = StaticMesh->GetStaticMaterials();
-		for (auto Mat : Materials)
+		for (int32 Idx = 0; Idx < Materials.Num(); Idx++)
 		{
+			const FStaticMaterial& Mat = Materials[Idx];
 			FMaterialSlot NewSlotMat;
+			NewSlotMat.Idx = Idx;
 			NewSlotMat.Name = Mat.MaterialSlotName.ToString();
-			NewSlotMat.InternalPath = GetPathWithoutExt(Mat.MaterialInterface.GetPath());
+			NewSlotMat.InternalPath = Mat.MaterialInterface ? GetPathWithoutExt(Mat.MaterialInterface.GetPath()) : TEXT("");
 			Result.ObjectMaterials.Add(NewSlotMat);
-			bIsSuccessful = true;
-			OutMessage = FString(TEXT("Data retrieved for static mesh"));
-			return Result;
 		}
+		bIsSuccessful = true;
+		OutMessage = FString(TEXT("Data retrieved for static mesh"));
+		return Result;
 	}
-	USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Result.Model);
+	USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Result.ModelPtr);
 	if (SkeletalMesh != nullptr)
 	{
 		Result.StringType = "SkeletalMesh";
-		TArray<FSkeletalMaterial> Materials = SkeletalMesh->GetMaterials();
-		for (auto Mat : Materials)
+		// Store skeleton path for reimport
+		if (SkeletalMesh->GetSkeleton())
 		{
-			FMaterialSlot NewSlotMat;
-			NewSlotMat.Name = Mat.MaterialSlotName.ToString();
-			NewSlotMat.InternalPath = GetPathWithoutExt(Mat.MaterialInterface.GetPath());
-			Result.ObjectMaterials.Add(NewSlotMat);
-			bIsSuccessful = true;
-			OutMessage = FString(TEXT("Data retrieved for skeletal mesh"));
-			return Result;
+			Result.Skeleton = SkeletalMesh->GetSkeleton()->GetPathName();
 		}
+		TArray<FSkeletalMaterial> Materials = SkeletalMesh->GetMaterials();
+		for (int32 Idx = 0; Idx < Materials.Num(); Idx++)
+		{
+			const FSkeletalMaterial& Mat = Materials[Idx];
+			FMaterialSlot NewSlotMat;
+			NewSlotMat.Idx = Idx;
+			NewSlotMat.Name = Mat.MaterialSlotName.ToString();
+			NewSlotMat.InternalPath = Mat.MaterialInterface ? GetPathWithoutExt(Mat.MaterialInterface.GetPath()) : TEXT("");
+			Result.ObjectMaterials.Add(NewSlotMat);
+		}
+		bIsSuccessful = true;
+		OutMessage = FString(TEXT("Data retrieved for skeletal mesh"));
+		return Result;
 	}
 	Result.StringType = "Unknown";
 	bIsSuccessful = true;

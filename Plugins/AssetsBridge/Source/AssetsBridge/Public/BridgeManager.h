@@ -115,11 +115,11 @@ public:
 	static bool HasExistingPackageAtPath(FString InPath);
 
 	UFUNCTION(BlueprintCallable, Category="Asset Bridge Tools")
-	static UObject* ImportAsset(FString InSourcePath, FString InDestPath, bool& bIsSuccessful, FString& OutMessage);
+	static UObject* ImportAsset(FString InSourcePath, FString InDestPath, FString InMeshType, FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage);
 
 private:
 	static UObject* ProcessTask(UAssetImportTask* ImportTask, bool& bIsSuccessful, FString& OutMessage);
-	static UAssetImportTask* CreateImportTask(FString InSourcePath, FString InDestPath, UFactory* InFactory,
-	                                          UObject* ExtraOpts, bool& bIsSuccessful, FString& OutMessage);
+	static UAssetImportTask* CreateImportTask(FString InSourcePath, FString InDestPath, FString InMeshType,
+	                                          FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage);
 	static void ExportObject(FString InObjInternalPath, FString InDestPath, bool& bIsSuccessful, FString& OutMessage);
 };

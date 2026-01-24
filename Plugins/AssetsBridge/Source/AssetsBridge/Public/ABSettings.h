@@ -17,12 +17,7 @@ class ASSETSBRIDGE_API UABSettings : public UObject
 public:
 	UABSettings(const FObjectInitializer& obj);
 
-	UPROPERTY(Config, EditAnywhere, Category = "ContentFolder")
-	FString UnrealContentLocation;
-
-	UPROPERTY(Config, EditAnywhere, Category = "AssetsLocation")
+	/** Root directory on disk where assets are exported to/imported from */
+	UPROPERTY(Config, EditAnywhere, Category = "Assets Bridge Configuration")
 	FString AssetLocationOnDisk;
-
-	UPROPERTY(Config, EditAnywhere, Category = "AssetBridgeWorkingDir")
-	FString AssetBridgeWorkingDir;
 };

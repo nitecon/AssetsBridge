@@ -1,11 +1,10 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "1.0",
-  "EngineVersion" : "5.3.0",
-  "MarketplaceURL" : "com.epicgames.launcher://ue/marketplace/product/97e3b0f30eeb420c98e058400f856495",
+  "Version": 2,
+  "VersionName": "2.0",
+  "EngineVersion": "5.7.0",
   "FriendlyName": "AssetsBridge",
-  "Description": "Provides a consistent means to manage assets between blender and unreal engine.",
+  "Description": "Bidirectional asset bridge between Blender and Unreal Engine.",
   "Category": "Editor Utilities",
   "CreatedBy": "Nitecon Studios LLC.",
   "CreatedByURL": "",
@@ -20,7 +19,7 @@
       "Name": "AssetsBridge",
       "Type": "Editor",
       "LoadingPhase": "Default",
-      "PlatformAllowList": [ "Win64", "Mac", "Linux", "IOS", "Android" ]
+      "PlatformAllowList": [ "Win64", "Mac" ]
     }
   ],
   "Plugins": [

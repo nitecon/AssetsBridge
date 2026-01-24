@@ -174,29 +174,21 @@ void FAssetsBridgeModule::MakeAssetButtonClicked()
 	{
 		if (Asset != nullptr)
 		{
-			if (FPaths::IsUnderDirectory(Asset.GetSoftObjectPath().ToString(),
-			                             UAssetsBridgeTools::GetContentBrowserRoot()))
+			FString SourcePackagePath = UAssetsBridgeTools::GetPathWithoutExt(Asset.GetSoftObjectPath().ToString());
+			FString TargetPath = UAssetsBridgeTools::GetSystemPathAsAssetPath(SourcePackagePath);
+			UObject* DuplicateObject = UEditorAssetLibrary::DuplicateAsset(SourcePackagePath, TargetPath);
+			if (DuplicateObject == nullptr)
 			{
-				UAssetsBridgeTools::ShowInfoDialog("This item is already a part of the assets root");
+				bIsSuccessful = false;
+				OutMessage = FString::Printf(
+					TEXT("Cannot duplicate: %s to %s, does it already exist?"), *SourcePackagePath, *TargetPath);
 			}
 			else
 			{
-				FString SourcePackagePath = UAssetsBridgeTools::GetPathWithoutExt(Asset.GetSoftObjectPath().ToString());
-				FString TargetPath = UAssetsBridgeTools::GetSystemPathAsAssetPath(SourcePackagePath);
-				UObject* DuplicateObject = UEditorAssetLibrary::DuplicateAsset(SourcePackagePath, TargetPath);
-				if (DuplicateObject == nullptr)
-				{
-					bIsSuccessful = false;
-					OutMessage = FString::Printf(
-						TEXT("Cannot duplicate: %s to %s, does it already exist?"), *SourcePackagePath, *TargetPath);
-				}
-				else
-				{
-					TArray<UObject*> SyncObjects;
-					SyncObjects.Add(DuplicateObject);
-					GEditor->SyncBrowserToObjects(SyncObjects);
-					UAssetsBridgeTools::ShowNotification("Asset snatched...");
-				}
+				TArray<UObject*> SyncObjects;
+				SyncObjects.Add(DuplicateObject);
+				GEditor->SyncBrowserToObjects(SyncObjects);
+				UAssetsBridgeTools::ShowNotification("Asset snatched...");
 			}
 		}
 		else

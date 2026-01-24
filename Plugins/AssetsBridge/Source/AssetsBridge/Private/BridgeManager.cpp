@@ -10,13 +10,21 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageTools.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
 #include "Exporters/Exporter.h"
 #include "Exporters/FbxExportOption.h"
 #include "Factories/FbxFactory.h"
+#include "Factories/FbxSkeletalMeshImportData.h"
+#include "Factories/FbxStaticMeshImportData.h"
 #include "Materials/MaterialInstance.h"
-#include "UnrealEd/Private/FbxExporter.h"
+// FBX Exporter is in UnrealEd private - use full path
+THIRD_PARTY_INCLUDES_START
+#include "Editor/UnrealEd/Private/FbxExporter.h"
+THIRD_PARTY_INCLUDES_END
 #include "Editor/UnrealEd/Public/AssetImportTask.h"
 #include "AssetToolsModule.h"
+#include "AutomatedAssetImportData.h"
+#include "Subsystems/EditorActorSubsystem.h"
 
 UBridgeManager::UBridgeManager()
 {
@@ -64,7 +72,11 @@ void UBridgeManager::ExecuteSwap(TArray<AActor*> SelectList, TArray<FAssetData> 
 
 			if (Factory)
 			{
-				GEditor->ReplaceSelectedActors(Factory, Asset);
+				// Use new UE5 API instead of deprecated GEditor->ReplaceSelectedActors
+				if (UEditorActorSubsystem* EditorActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>())
+				{
+					EditorActorSubsystem->ReplaceSelectedActors(Factory, Asset);
+				}
 			}
 		}
 	}
@@ -85,7 +97,7 @@ bool UBridgeManager::IsSystemPath(FString Path)
 FExportAsset UBridgeManager::DuplicateAndSwap(FExportAsset InAsset, bool& bIsSuccessful, FString& OutMessage)
 {
 	FExportAsset OutAsset;
-	UStaticMesh* Mesh = Cast<UStaticMesh>(InAsset.Model);
+	UStaticMesh* Mesh = Cast<UStaticMesh>(InAsset.ModelPtr);
 	if (Mesh)
 	{
 		FString SourcePackagePath = UAssetsBridgeTools::GetPathWithoutExt(Mesh->GetPathName());
@@ -100,7 +112,7 @@ FExportAsset UBridgeManager::DuplicateAndSwap(FExportAsset InAsset, bool& bIsSuc
 		UStaticMesh* DuplicateMesh = Cast<UStaticMesh>(DuplicateObject);
 		if (DuplicateMesh)
 		{
-			OutAsset.Model = DuplicateMesh;
+			OutAsset.ModelPtr = DuplicateMesh;
 			OutAsset.InternalPath = UAssetsBridgeTools::GetPathWithoutExt(DuplicateMesh->GetPathName()).Replace(TEXT("/Game"), TEXT(""));
 			OutAsset.ShortName = UAssetsBridgeTools::GetPathWithoutExt(DuplicateMesh->GetName());
 			TArray<FMaterialSlot> DupeMats;
@@ -129,7 +141,7 @@ FExportAsset UBridgeManager::DuplicateAndSwap(FExportAsset InAsset, bool& bIsSuc
 				}
 				DupeMats.Add(DupeMaterial);
 			}
-			OutAsset.Model = DuplicateMesh;
+			OutAsset.ModelPtr = DuplicateMesh;
 		}
 		FAssetData AssetData = UAssetsBridgeTools::GetAssetDataFromPath(DuplicateMesh->GetPathName());
 		TArray<FAssetData> AssetItems;
@@ -144,7 +156,7 @@ bool UBridgeManager::HasMatchingExport(TArray<FExportAsset> Assets, FAssetData I
 {
 	for (FExportAsset ExAsset : Assets)
 	{
-		if (ExAsset.Model->GetPathName().Equals(InAsset.GetAsset()->GetPathName()))
+		if (ExAsset.ModelPtr && ExAsset.ModelPtr->GetPathName().Equals(InAsset.GetAsset()->GetPathName()))
 		{
 			return true;
 		}
@@ -284,8 +296,8 @@ void UBridgeManager::GenerateExport(TArray<FExportAsset> MeshDataArray, bool& bI
 				return;
 			}
 		}
-		// TODO: just use Item.Model to run export task in the future.
-		UStaticMesh* Mesh = Cast<UStaticMesh>(Item.Model);
+		// TODO: just use Item.ModelPtr to run export task in the future.
+		UStaticMesh* Mesh = Cast<UStaticMesh>(Item.ModelPtr);
 		if (Mesh != nullptr)
 		{
 			Exporter->CreateDocument();
@@ -295,7 +307,7 @@ void UBridgeManager::GenerateExport(TArray<FExportAsset> MeshDataArray, bool& bI
 			//UGLTFExporter::ExportToGLTF(Mesh, *Item.ExportLocation.Replace(TEXT(".fbx"), TEXT(".gltf")));
 			bDidExport = true;
 		}
-		USkeletalMesh* SkeleMesh = Cast<USkeletalMesh>(Item.Model);
+		USkeletalMesh* SkeleMesh = Cast<USkeletalMesh>(Item.ModelPtr);
 		if (SkeleMesh != nullptr)
 		{
 			Exporter->CreateDocument();
@@ -326,13 +338,48 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 
 	for (auto Item : BridgeData.Objects)
 	{
-		FString FbxFileName = FPaths::GetBaseFilename(Item.ExportLocation);
-		// if item internalpath does not start with / prepend it
-		if (!Item.InternalPath.StartsWith("/"))
+		// Try to extract original asset name from 'Model' field which contains the full path
+		// Format: "/Script/Engine.SkeletalMesh'/Game/Path/AssetName.AssetName'" or "/Game/Path/AssetName.AssetName"
+		FString OriginalName = Item.ShortName;
+		if (!Item.Model.IsEmpty())
 		{
-			Item.InternalPath = "/" + Item.InternalPath;
+			// Extract asset name from model path
+			FString ModelPathStr = Item.Model;
+			int32 LastSlash = ModelPathStr.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+			int32 FirstDot = ModelPathStr.Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromStart, LastSlash);
+			if (LastSlash != INDEX_NONE && FirstDot != INDEX_NONE)
+			{
+				OriginalName = ModelPathStr.Mid(LastSlash + 1, FirstDot - LastSlash - 1);
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Extracted original name '%s' from ModelPath"), *OriginalName);
+			}
 		}
-		FString ImportPackageName = FString("/Game") + Item.InternalPath + FString("/") + Item.ShortName;
+		
+		// Normalize the internal path
+		FString NormalizedPath = Item.InternalPath;
+		
+		// Remove any /Game or /Content prefix if included
+		NormalizedPath.RemoveFromStart(TEXT("/Game"));
+		NormalizedPath.RemoveFromStart(TEXT("Game"));
+		NormalizedPath.RemoveFromStart(TEXT("/Content"));
+		NormalizedPath.RemoveFromStart(TEXT("Content"));
+		
+		// Ensure leading slash
+		if (!NormalizedPath.StartsWith("/"))
+		{
+			NormalizedPath = "/" + NormalizedPath;
+		}
+		
+		// Fix doubled path segments (e.g., /Assets/Assets/ -> /Assets/)
+		TArray<FString> PathSegments;
+		NormalizedPath.ParseIntoArray(PathSegments, TEXT("/"), true);
+		if (PathSegments.Num() >= 2 && PathSegments[0] == PathSegments[1])
+		{
+			PathSegments.RemoveAt(0);
+			NormalizedPath = "/" + FString::Join(PathSegments, TEXT("/"));
+			UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Fixed doubled path segment, normalized to: %s"), *NormalizedPath);
+		}
+		
+		FString ImportPackageName = FString("/Game") + NormalizedPath + FString("/") + OriginalName;
 		ImportPackageName = UPackageTools::SanitizePackageName(ImportPackageName);
 		bool bHasExisting = false;
 		FString ExistingName;
@@ -347,7 +394,7 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 
 			bHasExisting = true;
 		}
-		ImportAsset(Item.ExportLocation, ImportPackageName, bIsSuccessful, OutMessage);
+		ImportAsset(Item.ExportLocation, ImportPackageName, Item.StringType, Item.Skeleton, bIsSuccessful, OutMessage);
 		if (!bIsSuccessful)
 		{
 			return;
@@ -408,9 +455,9 @@ bool UBridgeManager::HasExistingPackageAtPath(FString InPath)
 	return FPackageName::DoesPackageExist(PackageName);
 }
 
-UObject* UBridgeManager::ImportAsset(FString InSourcePath, FString InDestPath, bool& bIsSuccessful, FString& OutMessage)
+UObject* UBridgeManager::ImportAsset(FString InSourcePath, FString InDestPath, FString InMeshType, FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage)
 {
-	UAssetImportTask* ImportTask = CreateImportTask(InSourcePath, InDestPath, nullptr, nullptr, bIsSuccessful, OutMessage);
+	UAssetImportTask* ImportTask = CreateImportTask(InSourcePath, InDestPath, InMeshType, InSkeletonPath, bIsSuccessful, OutMessage);
 	if (!bIsSuccessful)
 	{
 		return nullptr;
@@ -459,9 +506,15 @@ UObject* UBridgeManager::ProcessTask(UAssetImportTask* ImportTask, bool& bIsSucc
 	return ImportedObject;
 }
 
-UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString InDestPath, UFactory* InFactory,
-                                                   UObject* ExtraOpts, bool& bIsSuccessful, FString& OutMessage)
+UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString InDestPath, FString InMeshType,
+                                                   FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage)
 {
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === CreateImportTask ==="));
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Source: %s"), *InSourcePath);
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Dest: %s"), *InDestPath);
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: MeshType: %s"), *InMeshType);
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: SkeletonPath: %s"), *InSkeletonPath);
+	
 	UAssetImportTask* ResTask = NewObject<UAssetImportTask>();
 	if (ResTask == nullptr)
 	{
@@ -478,15 +531,98 @@ UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString
 	ResTask->bAsync = false;
 	ResTask->bReplaceExisting = true;
 	ResTask->bReplaceExistingSettings = false;
-	// should we bring in the FBXFactory options to handle additional capabilities like materials / textures?
-	/*UFbxFactory* FbxFactory = NewObject<UFbxFactory>();
+
+	// Configure FBX factory with proper settings - forces legacy FBX importer instead of Interchange
+	UFbxFactory* FbxFactory = NewObject<UFbxFactory>();
 	FbxFactory->AddToRoot();
+	
+	// CRITICAL: Set this to prevent Interchange from taking over the import
+	FbxFactory->SetAutomatedAssetImportData(NewObject<UAutomatedAssetImportData>());
+	
+	// Common settings - don't import materials/textures (use existing ones)
 	FbxFactory->ImportUI->bImportMaterials = false;
 	FbxFactory->ImportUI->bImportTextures = false;
-	FbxFactory->ImportUI->bIsObjImport = true;
-	FbxFactory->ImportUI->bIsReimport = bisReImport;
-	FbxFactory->ImportUI->StaticMeshImportData->ImportRotation = FRotator(0, -90, 0); // X = Roll , Y = Pitch, Z = Yaw
-	ResTask->Factory = FbxFactory;*/
+	FbxFactory->ImportUI->bImportAnimations = false;
+	FbxFactory->ImportUI->bAutomatedImportShouldDetectType = false;
+	
+	const bool bIsSkeletalMesh = InMeshType.Equals(TEXT("SkeletalMesh"), ESearchCase::IgnoreCase);
+	
+	if (bIsSkeletalMesh)
+	{
+		// Skeletal mesh specific settings
+		FbxFactory->ImportUI->MeshTypeToImport = FBXIT_SkeletalMesh;
+		FbxFactory->ImportUI->bImportAsSkeletal = true;
+		FbxFactory->ImportUI->bImportMesh = true;
+		
+		// NOTE: We intentionally do NOT force a skeleton here.
+		// The "cannot merge bone tree" error occurs when the FBX has a different bone structure
+		// than the skeleton we're trying to use. Let Interchange/FBX handle skeleton assignment.
+		// If the same mesh exists at destination, Unreal will update it properly.
+		// If not, a new skeleton will be created.
+		
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: SkeletonPath from JSON: %s"), *InSkeletonPath);
+		
+		// Check if destination mesh exists - just for logging
+		FString FullAssetPath = InDestPath + TEXT(".") + FPaths::GetBaseFilename(InDestPath);
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Looking for existing mesh at: %s"), *FullAssetPath);
+		USkeletalMesh* ExistingMesh = FindObject<USkeletalMesh>(nullptr, *FullAssetPath);
+		if (ExistingMesh)
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found existing mesh: %s"), *ExistingMesh->GetPathName());
+			if (ExistingMesh->GetSkeleton())
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Existing mesh skeleton: %s"), *ExistingMesh->GetSkeleton()->GetPathName());
+			}
+			// Mark as reimport so it updates the existing asset
+			FbxFactory->ImportUI->bIsReimport = true;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: No existing mesh found - new import"));
+			FbxFactory->ImportUI->bIsReimport = false;
+		}
+		
+		// Don't force skeleton - let the import system handle it based on the FBX content
+		FbxFactory->ImportUI->Skeleton = nullptr;
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeleton not forced - letting import system handle it"));
+		
+		// Skeletal mesh import settings
+		FbxFactory->ImportUI->SkeletalMeshImportData->bImportMeshesInBoneHierarchy = true;
+		FbxFactory->ImportUI->SkeletalMeshImportData->bConvertScene = true;
+		FbxFactory->ImportUI->SkeletalMeshImportData->bForceFrontXAxis = false;
+		FbxFactory->ImportUI->SkeletalMeshImportData->bConvertSceneUnit = true;
+		// DON'T use T0 as reference pose - use the actual bind pose from the FBX
+		FbxFactory->ImportUI->SkeletalMeshImportData->bUseT0AsRefPose = false;
+		// Preserve smoothing groups
+		FbxFactory->ImportUI->SkeletalMeshImportData->bPreserveSmoothingGroups = true;
+		// Keep bind pose from FBX
+		FbxFactory->ImportUI->SkeletalMeshImportData->bImportMorphTargets = true;
+		
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeletal mesh settings - bUseT0AsRefPose=false, bConvertScene=true"));
+	}
+	else
+	{
+		// Static mesh settings
+		FbxFactory->ImportUI->MeshTypeToImport = FBXIT_StaticMesh;
+		FbxFactory->ImportUI->bImportAsSkeletal = false;
+		FbxFactory->ImportUI->bImportMesh = true;
+		FbxFactory->ImportUI->StaticMeshImportData->bCombineMeshes = true;
+	}
+	
+	ResTask->Factory = FbxFactory;
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Import task configured:"));
+	UE_LOG(LogTemp, Log, TEXT("  - Factory: %s"), *FbxFactory->GetClass()->GetName());
+	UE_LOG(LogTemp, Log, TEXT("  - bReplaceExisting: %s"), ResTask->bReplaceExisting ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogTemp, Log, TEXT("  - bAutomated: %s"), ResTask->bAutomated ? TEXT("true") : TEXT("false"));
+	if (FbxFactory->ImportUI->Skeleton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("  - Skeleton: %s"), *FbxFactory->ImportUI->Skeleton->GetPathName());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("  - Skeleton: nullptr"));
+	}
 
 	bIsSuccessful = true;
 	OutMessage = "Task Created";
