@@ -344,6 +344,15 @@ public:
 	static void SetExportRoot(FString InLocation);
 
 	/**
+	* Opens a folder browser dialog to select the export root location.
+	* If a folder is selected, it is saved as the new export root.
+	*
+	* @return The selected folder path, or empty string if cancelled.
+	*/
+	UFUNCTION(BlueprintCallable, Category="Assets Bridge Settings")
+	static FString BrowseForExportRoot();
+
+	/**
 	 * Get the asset data for a specific path from the asset manager.
 	 * @param Path is a FString path to the object for which we want to retrieve information
 	 * @returns FAssetData for the object

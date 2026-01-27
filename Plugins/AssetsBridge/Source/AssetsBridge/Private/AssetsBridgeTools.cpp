@@ -333,6 +333,23 @@ void UAssetsBridgeTools::SetExportRoot(FString InLocation)
 	}
 }
 
+FString UAssetsBridgeTools::BrowseForExportRoot()
+{
+	// Use the existing GetOSDirectoryLocation to open a folder browser
+	FString SelectedFolder = GetOSDirectoryLocation(TEXT("Select Export Root Folder"));
+	
+	// Check if user cancelled (returns "Unknown" on cancel)
+	if (SelectedFolder.IsEmpty() || SelectedFolder == TEXT("Unknown"))
+	{
+		return FString();
+	}
+	
+	// Save the selected folder as the new export root
+	SetExportRoot(SelectedFolder);
+	
+	return SelectedFolder;
+}
+
 FAssetData UAssetsBridgeTools::GetAssetDataFromPath(FString Path)
 {
 	UAssetManager& AssetManager = UAssetManager::Get();
