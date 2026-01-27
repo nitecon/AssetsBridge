@@ -11,20 +11,16 @@
 #include "PackageTools.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
+#include "Animation/Skeleton.h"
+#include "Animation/MorphTarget.h"
 #include "Exporters/Exporter.h"
-#include "Exporters/FbxExportOption.h"
-#include "Factories/FbxFactory.h"
-#include "Factories/FbxSkeletalMeshImportData.h"
-#include "Factories/FbxStaticMeshImportData.h"
 #include "Materials/MaterialInstance.h"
-// FBX Exporter is in UnrealEd private - use full path
-THIRD_PARTY_INCLUDES_START
-#include "Editor/UnrealEd/Private/FbxExporter.h"
-THIRD_PARTY_INCLUDES_END
 #include "Editor/UnrealEd/Public/AssetImportTask.h"
 #include "AssetToolsModule.h"
 #include "AutomatedAssetImportData.h"
 #include "Subsystems/EditorActorSubsystem.h"
+// Export task for automated export
+#include "AssetExportTask.h"
 
 UBridgeManager::UBridgeManager()
 {
@@ -265,25 +261,28 @@ void UBridgeManager::StartExport(bool& bIsSuccessful, FString& OutMessage)
 
 void UBridgeManager::GenerateExport(TArray<FExportAsset> MeshDataArray, bool& bIsSuccessful, FString& OutMessage)
 {
-	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
-	bool bIsCanceled = false;
-	bool bExportAll;
-	INodeNameAdapter NodeNameAdapter;
-	Exporter->FillExportOptions(false, false, UExporter::CurrentFilename, bIsCanceled, bExportAll);
-	UFbxExportOption* ExportOptions = Exporter->GetExportOptions();
-	ExportOptions->FbxExportCompatibility = EFbxExportCompatibility::FBX_2020;
-	ExportOptions->bForceFrontXAxis = false;
-	ExportOptions->bASCII = false;
-	ExportOptions->LevelOfDetail = false;
-	ExportOptions->SaveOptions();
-	Exporter->SetExportOptionsOverride(ExportOptions);
 	FBridgeExport ExportData;
 	ExportData.Operation = "UnrealExport";
+	
+	// Find the glTF exporter class
+	UClass* GLTFExporterClass = nullptr;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		if (It->IsChildOf(UExporter::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract))
+		{
+			FString ClassName = It->GetName();
+			if (ClassName.Contains(TEXT("GLTFStaticMeshExporter")) || ClassName.Contains(TEXT("GLTFSkeletalMeshExporter")))
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found glTF exporter class: %s"), *ClassName);
+			}
+		}
+	}
+	
 	for (auto Item : MeshDataArray)
 	{
 		bool bDidExport = false;
-		//FBridgeExportElement ExItem;
-		// Create the distination directory if it doesn't already exist
+		
+		// Create the destination directory if it doesn't already exist
 		FString ItemPath = FPaths::GetPath(*Item.ExportLocation);
 		if (!IFileManager::Get().DirectoryExists(*ItemPath))
 		{
@@ -296,33 +295,90 @@ void UBridgeManager::GenerateExport(TArray<FExportAsset> MeshDataArray, bool& bI
 				return;
 			}
 		}
-		// TODO: just use Item.ModelPtr to run export task in the future.
+		
+		UObject* ObjectToExport = nullptr;
+		FString ExporterClassName;
+		
 		UStaticMesh* Mesh = Cast<UStaticMesh>(Item.ModelPtr);
 		if (Mesh != nullptr)
 		{
-			Exporter->CreateDocument();
-			Exporter->ExportStaticMesh(Mesh, &Mesh->GetStaticMaterials());
-			Exporter->WriteToFile(*Item.ExportLocation);
-			Exporter->CloseDocument();
-			//UGLTFExporter::ExportToGLTF(Mesh, *Item.ExportLocation.Replace(TEXT(".fbx"), TEXT(".gltf")));
-			bDidExport = true;
+			ObjectToExport = Mesh;
+			ExporterClassName = TEXT("GLTFStaticMeshExporter");
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preparing to export static mesh %s to glTF: %s"), *Mesh->GetName(), *Item.ExportLocation);
 		}
+		
 		USkeletalMesh* SkeleMesh = Cast<USkeletalMesh>(Item.ModelPtr);
 		if (SkeleMesh != nullptr)
 		{
-			Exporter->CreateDocument();
-			Exporter->ExportSkeletalMesh(SkeleMesh);
-			Exporter->WriteToFile(*Item.ExportLocation);
-			Exporter->CloseDocument();
-			//UGLTFExporter::ExportToGLTF(Mesh, *Item.ExportLocation.Replace(TEXT(".fbx"), TEXT(".gltf")));
-			bDidExport = true;
+			ObjectToExport = SkeleMesh;
+			ExporterClassName = TEXT("GLTFSkeletalMeshExporter");
+			
+			// Log skeleton info for debugging
+			USkeleton* Skeleton = SkeleMesh->GetSkeleton();
+			if (Skeleton)
+			{
+				const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+				int32 NumBones = RefSkeleton.GetNum();
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge Export: Mesh %s uses skeleton %s with %d total bones"), 
+					*SkeleMesh->GetName(), *Skeleton->GetName(), NumBones);
+			}
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preparing to export skeletal mesh %s to glTF: %s"), *SkeleMesh->GetName(), *Item.ExportLocation);
 		}
+		
+		if (ObjectToExport)
+		{
+			// Find the appropriate glTF exporter
+			UExporter* Exporter = nullptr;
+			for (TObjectIterator<UClass> It; It; ++It)
+			{
+				if (It->IsChildOf(UExporter::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract))
+				{
+					if (It->GetName().Contains(ExporterClassName))
+					{
+						Exporter = NewObject<UExporter>(GetTransientPackage(), *It);
+						break;
+					}
+				}
+			}
+			
+			if (Exporter)
+			{
+				// Use UAssetExportTask for automated export
+				UAssetExportTask* ExportTask = NewObject<UAssetExportTask>();
+				ExportTask->Object = ObjectToExport;
+				ExportTask->Exporter = Exporter;
+				ExportTask->Filename = Item.ExportLocation;
+				ExportTask->bSelected = false;
+				ExportTask->bReplaceIdentical = true;
+				ExportTask->bPrompt = false;
+				ExportTask->bAutomated = true;
+				ExportTask->bUseFileArchive = false;
+				ExportTask->bWriteEmptyFiles = false;
+				
+				bool bExportSuccess = UExporter::RunAssetExportTask(ExportTask);
+				
+				if (bExportSuccess)
+				{
+					bDidExport = true;
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Successfully exported %s"), *ObjectToExport->GetName());
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Failed to export %s"), *ObjectToExport->GetName());
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("AssetsBridge: Could not find glTF exporter for %s"), *ExporterClassName);
+			}
+		}
+		
 		if (bDidExport)
 		{
 			ExportData.Objects.Add(Item);
 		}
 	}
-	Exporter->DeleteInstance();
+	
 	UAssetsBridgeTools::WriteBridgeExportFile(ExportData, bIsSuccessful, OutMessage);
 }
 
@@ -394,10 +450,113 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 
 			bHasExisting = true;
 		}
-		ImportAsset(Item.ExportLocation, ImportPackageName, Item.StringType, Item.Skeleton, bIsSuccessful, OutMessage);
+		UObject* ImportedAsset = ImportAsset(Item.ExportLocation, ImportPackageName, Item.StringType, Item.Skeleton, bIsSuccessful, OutMessage);
 		if (!bIsSuccessful)
 		{
 			return;
+		}
+		
+		// Restore morph target names for skeletal meshes
+		if (Item.StringType == "SkeletalMesh" && Item.MorphTargets.Num() > 0 && ImportedAsset)
+		{
+			USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(ImportedAsset);
+			if (SkeletalMesh)
+			{
+				const TArray<UMorphTarget*>& MorphTargets = SkeletalMesh->GetMorphTargets();
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Restoring %d morph target names (imported has %d)"), 
+					Item.MorphTargets.Num(), MorphTargets.Num());
+				
+				// Rename morph targets to their original names
+				int32 NumToRename = FMath::Min(Item.MorphTargets.Num(), MorphTargets.Num());
+				for (int32 i = 0; i < NumToRename; i++)
+				{
+					UMorphTarget* MorphTarget = MorphTargets[i];
+					if (MorphTarget)
+					{
+						FString OldName = MorphTarget->GetName();
+						FString NewName = Item.MorphTargets[i];
+						if (OldName != NewName)
+						{
+							MorphTarget->Rename(*NewName, SkeletalMesh, REN_DontCreateRedirectors | REN_NonTransactional);
+							UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Renamed morph target %s -> %s"), *OldName, *NewName);
+						}
+					}
+				}
+				
+				// Mark the mesh as modified so the names are saved
+				SkeletalMesh->MarkPackageDirty();
+			}
+		}
+		
+		// Process material changeset to restore/handle materials
+		if (ImportedAsset)
+		{
+			UStaticMesh* StaticMesh = Cast<UStaticMesh>(ImportedAsset);
+			USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(ImportedAsset);
+			
+			// Get material counts for bounds checking
+			int32 MatCount = StaticMesh ? StaticMesh->GetStaticMaterials().Num() : 
+			                 (SkeletalMesh ? SkeletalMesh->GetMaterials().Num() : 0);
+			
+			// Log changeset info
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Material changeset - Added: %d, Removed: %d, Unchanged: %d"),
+				Item.MaterialChangeset.Added.Num(),
+				Item.MaterialChangeset.Removed.Num(),
+				Item.MaterialChangeset.Unchanged.Num());
+			
+			// Restore unchanged materials (materials that existed before and still exist)
+			for (const FMaterialSlot& MatSlot : Item.MaterialChangeset.Unchanged)
+			{
+				if (MatSlot.Idx >= MatCount)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Material slot %d out of bounds (mesh has %d slots)"), MatSlot.Idx, MatCount);
+					continue;
+				}
+				
+				FString MaterialPath = MatSlot.InternalPath;
+				if (!MaterialPath.StartsWith(TEXT("/Game")) && !MaterialPath.StartsWith(TEXT("/Engine")))
+				{
+					MaterialPath = TEXT("/Game") + MaterialPath;
+				}
+				
+				UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+				if (Material)
+				{
+					if (StaticMesh)
+					{
+						StaticMesh->SetMaterial(MatSlot.Idx, Material);
+					}
+					else if (SkeletalMesh)
+					{
+						SkeletalMesh->GetMaterials()[MatSlot.Idx].MaterialInterface = Material;
+					}
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Restored unchanged material %s at slot %d"), *MatSlot.Name, MatSlot.Idx);
+				}
+			}
+			
+			// Log added materials (new slots - user needs to assign materials in Unreal)
+			for (const FMaterialSlot& MatSlot : Item.MaterialChangeset.Added)
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: New material slot added in Blender: %s at slot %d (assign material in Unreal)"), 
+					*MatSlot.Name, MatSlot.Idx);
+			}
+			
+			// Log removed materials
+			for (const FMaterialSlot& MatSlot : Item.MaterialChangeset.Removed)
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Material removed in Blender: %s (was at slot %d)"), 
+					*MatSlot.Name, MatSlot.OriginalIdx);
+			}
+			
+			// Mark as dirty so changes are saved
+			if (StaticMesh)
+			{
+				StaticMesh->MarkPackageDirty();
+			}
+			else if (SkeletalMesh)
+			{
+				SkeletalMesh->MarkPackageDirty();
+			}
 		}
 	}
 	bIsSuccessful = true;
@@ -457,12 +616,18 @@ bool UBridgeManager::HasExistingPackageAtPath(FString InPath)
 
 UObject* UBridgeManager::ImportAsset(FString InSourcePath, FString InDestPath, FString InMeshType, FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage)
 {
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === ImportAsset (glTF) ==="));
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Source: %s"), *InSourcePath);
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Dest: %s"), *InDestPath);
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: MeshType: %s"), *InMeshType);
+	
 	UAssetImportTask* ImportTask = CreateImportTask(InSourcePath, InDestPath, InMeshType, InSkeletonPath, bIsSuccessful, OutMessage);
 	if (!bIsSuccessful)
 	{
 		return nullptr;
 	}
 	UObject* RetAss = ProcessTask(ImportTask, bIsSuccessful, OutMessage);
+	
 	if (!bIsSuccessful)
 	{
 		return nullptr;
@@ -509,7 +674,7 @@ UObject* UBridgeManager::ProcessTask(UAssetImportTask* ImportTask, bool& bIsSucc
 UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString InDestPath, FString InMeshType,
                                                    FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage)
 {
-	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === CreateImportTask ==="));
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === CreateImportTask (glTF) ==="));
 	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Source: %s"), *InSourcePath);
 	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Dest: %s"), *InDestPath);
 	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: MeshType: %s"), *InMeshType);
@@ -532,40 +697,20 @@ UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString
 	ResTask->bReplaceExisting = true;
 	ResTask->bReplaceExistingSettings = false;
 
-	// Configure FBX factory with proper settings - forces legacy FBX importer instead of Interchange
-	UFbxFactory* FbxFactory = NewObject<UFbxFactory>();
-	FbxFactory->AddToRoot();
-	
-	// CRITICAL: Set this to prevent Interchange from taking over the import
-	FbxFactory->SetAutomatedAssetImportData(NewObject<UAutomatedAssetImportData>());
-	
-	// Common settings - don't import materials/textures (use existing ones)
-	FbxFactory->ImportUI->bImportMaterials = false;
-	FbxFactory->ImportUI->bImportTextures = false;
-	FbxFactory->ImportUI->bImportAnimations = false;
-	FbxFactory->ImportUI->bAutomatedImportShouldDetectType = false;
+	// glTF import uses Interchange framework automatically via AssetTools
+	// No factory configuration needed - Unreal detects glTF/GLB and uses Interchange
+	// The import settings are configured via project settings or Interchange pipelines
 	
 	const bool bIsSkeletalMesh = InMeshType.Equals(TEXT("SkeletalMesh"), ESearchCase::IgnoreCase);
 	
 	if (bIsSkeletalMesh)
 	{
-		// Skeletal mesh specific settings
-		FbxFactory->ImportUI->MeshTypeToImport = FBXIT_SkeletalMesh;
-		FbxFactory->ImportUI->bImportAsSkeletal = true;
-		FbxFactory->ImportUI->bImportMesh = true;
-		
-		// NOTE: We intentionally do NOT force a skeleton here.
-		// The "cannot merge bone tree" error occurs when the FBX has a different bone structure
-		// than the skeleton we're trying to use. Let Interchange/FBX handle skeleton assignment.
-		// If the same mesh exists at destination, Unreal will update it properly.
-		// If not, a new skeleton will be created.
-		
 		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: SkeletonPath from JSON: %s"), *InSkeletonPath);
 		
-		// Check if destination mesh exists - just for logging
+		// Check if destination mesh exists
 		FString FullAssetPath = InDestPath + TEXT(".") + FPaths::GetBaseFilename(InDestPath);
 		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Looking for existing mesh at: %s"), *FullAssetPath);
-		USkeletalMesh* ExistingMesh = FindObject<USkeletalMesh>(nullptr, *FullAssetPath);
+		USkeletalMesh* ExistingMesh = LoadObject<USkeletalMesh>(nullptr, *FullAssetPath);
 		if (ExistingMesh)
 		{
 			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found existing mesh: %s"), *ExistingMesh->GetPathName());
@@ -573,56 +718,25 @@ UAssetImportTask* UBridgeManager::CreateImportTask(FString InSourcePath, FString
 			{
 				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Existing mesh skeleton: %s"), *ExistingMesh->GetSkeleton()->GetPathName());
 			}
-			// Mark as reimport so it updates the existing asset
-			FbxFactory->ImportUI->bIsReimport = true;
 		}
 		else
 		{
 			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: No existing mesh found - new import"));
-			FbxFactory->ImportUI->bIsReimport = false;
 		}
 		
-		// Don't force skeleton - let the import system handle it based on the FBX content
-		FbxFactory->ImportUI->Skeleton = nullptr;
-		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeleton not forced - letting import system handle it"));
-		
-		// Skeletal mesh import settings
-		FbxFactory->ImportUI->SkeletalMeshImportData->bImportMeshesInBoneHierarchy = true;
-		FbxFactory->ImportUI->SkeletalMeshImportData->bConvertScene = true;
-		FbxFactory->ImportUI->SkeletalMeshImportData->bForceFrontXAxis = false;
-		FbxFactory->ImportUI->SkeletalMeshImportData->bConvertSceneUnit = true;
-		// DON'T use T0 as reference pose - use the actual bind pose from the FBX
-		FbxFactory->ImportUI->SkeletalMeshImportData->bUseT0AsRefPose = false;
-		// Preserve smoothing groups
-		FbxFactory->ImportUI->SkeletalMeshImportData->bPreserveSmoothingGroups = true;
-		// Keep bind pose from FBX
-		FbxFactory->ImportUI->SkeletalMeshImportData->bImportMorphTargets = true;
-		
-		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeletal mesh settings - bUseT0AsRefPose=false, bConvertScene=true"));
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeletal mesh import via glTF/Interchange"));
 	}
 	else
 	{
-		// Static mesh settings
-		FbxFactory->ImportUI->MeshTypeToImport = FBXIT_StaticMesh;
-		FbxFactory->ImportUI->bImportAsSkeletal = false;
-		FbxFactory->ImportUI->bImportMesh = true;
-		FbxFactory->ImportUI->StaticMeshImportData->bCombineMeshes = true;
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Static mesh import via glTF/Interchange"));
 	}
-	
-	ResTask->Factory = FbxFactory;
 	
 	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Import task configured:"));
-	UE_LOG(LogTemp, Log, TEXT("  - Factory: %s"), *FbxFactory->GetClass()->GetName());
+	UE_LOG(LogTemp, Log, TEXT("  - Source: %s"), *ResTask->Filename);
+	UE_LOG(LogTemp, Log, TEXT("  - DestPath: %s"), *ResTask->DestinationPath);
+	UE_LOG(LogTemp, Log, TEXT("  - DestName: %s"), *ResTask->DestinationName);
 	UE_LOG(LogTemp, Log, TEXT("  - bReplaceExisting: %s"), ResTask->bReplaceExisting ? TEXT("true") : TEXT("false"));
 	UE_LOG(LogTemp, Log, TEXT("  - bAutomated: %s"), ResTask->bAutomated ? TEXT("true") : TEXT("false"));
-	if (FbxFactory->ImportUI->Skeleton)
-	{
-		UE_LOG(LogTemp, Log, TEXT("  - Skeleton: %s"), *FbxFactory->ImportUI->Skeleton->GetPathName());
-	}
-	else
-	{
-		UE_LOG(LogTemp, Log, TEXT("  - Skeleton: nullptr"));
-	}
 
 	bIsSuccessful = true;
 	OutMessage = "Task Created";

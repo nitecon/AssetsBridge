@@ -11,6 +11,7 @@
 #include "Developer/DesktopPlatform/Public/DesktopPlatformModule.h"
 #include "Engine/AssetManager.h"
 #include "Engine/SkinnedAssetCommon.h"
+#include "Animation/MorphTarget.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonSerializer.h"
@@ -32,7 +33,7 @@ FString UAssetsBridgeTools::GetExportPathFromInternal(FString NewInternalPath, F
 	FString AssetHome;
 	GetExportRoot(AssetHome);
 	// TODO: Strip Engine / Game / Other folders from the start.
-	FString NewExportPath = FPaths::Combine(AssetHome, NewInternalPath, NewName.Append(".fbx"));
+	FString NewExportPath = FPaths::Combine(AssetHome, NewInternalPath, NewName.Append(".glb"));
 	UE_LOG(LogTemp, Warning, TEXT("Adding new export path: %s"), *NewExportPath)
 	return NewExportPath;
 }
@@ -420,7 +421,7 @@ FExportAsset UAssetsBridgeTools::GetExportInfo(FAssetData AssetInfo, bool& bIsSu
 	Result.ModelPtr = AssetInfo.GetAsset();
 	Result.Model = AssetInfo.GetObjectPathString();  // Store full path for reimport
 	Result.ShortName = ShortName;
-	FString FileName = ShortName.Append(".fbx");
+	FString FileName = ShortName.Append(".glb");
 	FString ExportLoc = FPaths::Combine(AssetPath, RelativeContentPath, FileName);
 	Result.ExportLocation = ExportLoc;
 	Result.InternalPath = RelativeContentPath;
@@ -452,6 +453,16 @@ FExportAsset UAssetsBridgeTools::GetExportInfo(FAssetData AssetInfo, bool& bIsSu
 		if (SkeletalMesh->GetSkeleton())
 		{
 			Result.Skeleton = SkeletalMesh->GetSkeleton()->GetPathName();
+		}
+		// Capture morph target names for preservation through glTF round-trip
+		const TArray<UMorphTarget*>& MorphTargets = SkeletalMesh->GetMorphTargets();
+		for (const UMorphTarget* MorphTarget : MorphTargets)
+		{
+			if (MorphTarget)
+			{
+				Result.MorphTargets.Add(MorphTarget->GetName());
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Captured morph target: %s"), *MorphTarget->GetName());
+			}
 		}
 		TArray<FSkeletalMaterial> Materials = SkeletalMesh->GetMaterials();
 		for (int32 Idx = 0; Idx < Materials.Num(); Idx++)

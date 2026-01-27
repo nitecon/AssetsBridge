@@ -24,6 +24,28 @@ struct FMaterialSlot
 	/** Where to find it in the content library. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Material")
 	FString InternalPath = "";
+
+	/** Original index before any changes (for tracking removals) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Material")
+	int OriginalIdx = -1;
+};
+
+USTRUCT(BlueprintType)
+struct FMaterialChangeset
+{
+	GENERATED_BODY()
+
+	/** Materials that were added in Blender (new slots) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Material")
+	TArray<FMaterialSlot> Added;
+
+	/** Materials that were removed in Blender */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Material")
+	TArray<FMaterialSlot> Removed;
+
+	/** Materials that remain unchanged (restore original Unreal materials) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Material")
+	TArray<FMaterialSlot> Unchanged;
 };
 
 USTRUCT(BlueprintType)
@@ -72,6 +94,10 @@ struct FExportAsset
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	TArray<FMaterialSlot> ObjectMaterials;
 
+	/** Material changeset tracking additions/removals between Blender and Unreal */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
+	FMaterialChangeset MaterialChangeset;
+
 	/** Where to find it in the content library. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FString InternalPath = "";
@@ -95,6 +121,10 @@ struct FExportAsset
 	/** Path to skeleton asset (for skeletal meshes only) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FString Skeleton = "";
+
+	/** Morph target names (for skeletal meshes with blend shapes) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
+	TArray<FString> MorphTargets;
 
 	/** World transform data */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")

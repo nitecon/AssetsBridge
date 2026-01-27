@@ -26,6 +26,14 @@
     {
       "Name": "EditorScriptingUtilities",
       "Enabled": true
+    },
+    {
+      "Name": "DatasmithImporter",
+      "Enabled": true
+    },
+    {
+      "Name": "DatasmithContent",
+      "Enabled": true
     }
   ]
 }

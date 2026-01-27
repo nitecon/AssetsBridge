@@ -30,7 +30,6 @@ public class AssetsBridge : ModuleRules
 			{
 				"Core", "Blutility",
 				"JsonUtilities",
-				
 				// ... add other public dependencies that you statically link with here ...
 			}
 		);
