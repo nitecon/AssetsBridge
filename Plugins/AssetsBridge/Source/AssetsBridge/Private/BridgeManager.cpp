@@ -21,6 +21,10 @@
 #include "Subsystems/EditorActorSubsystem.h"
 // Export task for automated export
 #include "AssetExportTask.h"
+// Physics asset for retargeting
+#include "PhysicsEngine/PhysicsAsset.h"
+// For skeleton compatibility check
+#include "Engine/SkinnedAssetCommon.h"
 
 UBridgeManager::UBridgeManager()
 {
@@ -456,6 +460,24 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 			return;
 		}
 		
+		// Relocate asset if Interchange created it in a subfolder structure
+		if (ImportedAsset)
+		{
+			bool bRelocateSuccess = false;
+			FString RelocateMessage;
+			UObject* RelocatedAsset = RelocateImportedAsset(ImportedAsset, ImportPackageName, bRelocateSuccess, RelocateMessage);
+			if (bRelocateSuccess && RelocatedAsset)
+			{
+				ImportedAsset = RelocatedAsset;
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: %s"), *RelocateMessage);
+			}
+			else if (!bRelocateSuccess)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Relocation issue: %s"), *RelocateMessage);
+				// Continue with original asset even if relocation failed
+			}
+		}
+		
 		// Restore morph target names for skeletal meshes
 		if (Item.StringType == "SkeletalMesh" && Item.MorphTargets.Num() > 0 && ImportedAsset)
 		{
@@ -487,6 +509,10 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 				SkeletalMesh->MarkPackageDirty();
 			}
 		}
+		
+		// Note: Automatic skeleton retargeting has been removed.
+		// New skeletal mesh imports will keep their own skeleton and physics assets.
+		// Users should manually retarget if needed through the Unreal Editor skeleton tools.
 		
 		// Process material changeset to restore/handle materials
 		if (ImportedAsset)
@@ -653,19 +679,61 @@ UObject* UBridgeManager::ProcessTask(UAssetImportTask* ImportTask, bool& bIsSucc
 		return nullptr;
 	}
 	AssetTools->Get().ImportAssetTasks({ImportTask});
-	if (ImportTask->GetObjects().Num() == 0)
+	
+	const TArray<UObject*>& ImportedObjects = ImportTask->GetObjects();
+	if (ImportedObjects.Num() == 0)
 	{
 		bIsSuccessful = false;
-		OutMessage = "Could not process task";
+		OutMessage = "Could not process task - no objects imported";
 		return nullptr;
 	}
-	UObject* ImportedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *FPaths::Combine(ImportTask->DestinationPath, ImportTask->DestinationName));
+	
+	// Log all imported objects for debugging
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Import returned %d objects:"), ImportedObjects.Num());
+	for (int32 i = 0; i < ImportedObjects.Num(); i++)
+	{
+		if (ImportedObjects[i])
+		{
+			UE_LOG(LogTemp, Log, TEXT("  [%d] %s (%s)"), i, *ImportedObjects[i]->GetPathName(), *ImportedObjects[i]->GetClass()->GetName());
+		}
+	}
+	
+	// Find the primary imported object - prefer SkeletalMesh or StaticMesh
+	UObject* ImportedObject = nullptr;
+	for (UObject* Obj : ImportedObjects)
+	{
+		if (Obj)
+		{
+			// Prefer mesh assets over skeleton/physics assets
+			if (Cast<USkeletalMesh>(Obj) || Cast<UStaticMesh>(Obj))
+			{
+				ImportedObject = Obj;
+				break;
+			}
+		}
+	}
+	
+	// Fallback to first non-null object if no mesh found
+	if (!ImportedObject)
+	{
+		for (UObject* Obj : ImportedObjects)
+		{
+			if (Obj)
+			{
+				ImportedObject = Obj;
+				break;
+			}
+		}
+	}
+	
 	if (ImportedObject == nullptr)
 	{
 		bIsSuccessful = false;
-		OutMessage = "Import partially successful but returned invalid object";
+		OutMessage = "Import completed but no valid object found";
 		return nullptr;
 	}
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Selected primary import object: %s"), *ImportedObject->GetPathName());
 	bIsSuccessful = true;
 	OutMessage = "Import success";
 	return ImportedObject;
@@ -756,4 +824,462 @@ void UBridgeManager::ExportObject(FString InObjInternalPath, FString InDestPath,
 	AssetTools->Get().ExportAssets(TArray<FString>{InObjInternalPath}, FPaths::GetPath(InDestPath));
 	bIsSuccessful = true;
 	OutMessage = "Export success";
+}
+
+void UBridgeManager::FindGeneratedAssetsNearMesh(USkeletalMesh* InMesh, USkeleton*& OutGeneratedSkeleton, UPhysicsAsset*& OutGeneratedPhysicsAsset)
+{
+	OutGeneratedSkeleton = nullptr;
+	OutGeneratedPhysicsAsset = nullptr;
+	
+	if (!InMesh)
+	{
+		return;
+	}
+	
+	// Get the mesh's current skeleton and physics asset (these are likely auto-generated)
+	OutGeneratedSkeleton = InMesh->GetSkeleton();
+	OutGeneratedPhysicsAsset = InMesh->GetPhysicsAsset();
+	
+	// Log what we found
+	if (OutGeneratedSkeleton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found skeleton on mesh: %s"), *OutGeneratedSkeleton->GetPathName());
+	}
+	if (OutGeneratedPhysicsAsset)
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found physics asset on mesh: %s"), *OutGeneratedPhysicsAsset->GetPathName());
+	}
+}
+
+FSkeletonImportResult UBridgeManager::AnalyzeSkeletalMeshImport(USkeletalMesh* InImportedMesh, const FString& InIntendedSkeletonPath)
+{
+	FSkeletonImportResult Result;
+	Result.ImportedMesh = InImportedMesh;
+	Result.IntendedSkeletonPath = InIntendedSkeletonPath;
+	
+	if (!InImportedMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: AnalyzeSkeletalMeshImport called with null mesh"));
+		return Result;
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === Analyzing Skeletal Mesh Import ==="));
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Mesh: %s"), *InImportedMesh->GetPathName());
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Intended skeleton: %s"), *InIntendedSkeletonPath);
+	
+	// Find what was generated with the import
+	USkeleton* GeneratedSkeleton = nullptr;
+	UPhysicsAsset* GeneratedPhysicsAsset = nullptr;
+	FindGeneratedAssetsNearMesh(InImportedMesh, GeneratedSkeleton, GeneratedPhysicsAsset);
+	
+	// Check if intended skeleton exists and is different from what was generated
+	USkeleton* IntendedSkeleton = nullptr;
+	if (!InIntendedSkeletonPath.IsEmpty())
+	{
+		IntendedSkeleton = LoadObject<USkeleton>(nullptr, *InIntendedSkeletonPath);
+		if (IntendedSkeleton)
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Found intended skeleton: %s"), *IntendedSkeleton->GetPathName());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Could not load intended skeleton at: %s"), *InIntendedSkeletonPath);
+		}
+	}
+	
+	// Determine if a new skeleton was generated (different from intended)
+	if (GeneratedSkeleton)
+	{
+		Result.GeneratedSkeletonPath = GeneratedSkeleton->GetPathName();
+		
+		if (IntendedSkeleton)
+		{
+			// Check if the generated skeleton is different from the intended one
+			if (GeneratedSkeleton != IntendedSkeleton)
+			{
+				Result.bNewSkeletonGenerated = true;
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: New skeleton was auto-generated (different from intended)"));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Mesh is using the intended skeleton - no retargeting needed"));
+			}
+		}
+		else if (!InIntendedSkeletonPath.IsEmpty())
+		{
+			// Intended skeleton was specified but couldn't be loaded - assume new was generated
+			Result.bNewSkeletonGenerated = true;
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: New skeleton generated (intended skeleton not found)"));
+		}
+	}
+	
+	// Check for auto-generated physics asset
+	if (GeneratedPhysicsAsset)
+	{
+		Result.GeneratedPhysicsAssetPath = GeneratedPhysicsAsset->GetPathName();
+		
+		// Physics assets are typically auto-generated if they're in the same package/folder as the mesh
+		FString MeshPath = FPaths::GetPath(InImportedMesh->GetPathName());
+		FString PhysicsPath = FPaths::GetPath(GeneratedPhysicsAsset->GetPathName());
+		
+		// If physics asset is in same location or a subfolder, it was likely auto-generated
+		if (PhysicsPath.Contains(MeshPath) || MeshPath.Contains(PhysicsPath))
+		{
+			Result.bNewPhysicsAssetGenerated = true;
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Physics asset appears to be auto-generated"));
+		}
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Analysis complete - NewSkeleton: %s, NewPhysicsAsset: %s"),
+		Result.bNewSkeletonGenerated ? TEXT("Yes") : TEXT("No"),
+		Result.bNewPhysicsAssetGenerated ? TEXT("Yes") : TEXT("No"));
+	
+	return Result;
+}
+
+bool UBridgeManager::PromptUserForSkeletonRetarget(const FSkeletonImportResult& InImportResult)
+{
+	if (!InImportResult.bNewSkeletonGenerated)
+	{
+		return false;
+	}
+	
+	// Build the message
+	FString Message = FString::Printf(
+		TEXT("The imported skeletal mesh has a new auto-generated skeleton.\n\n")
+		TEXT("Mesh: %s\n")
+		TEXT("Generated Skeleton: %s\n")
+		TEXT("Intended Skeleton: %s\n\n")
+		TEXT("Would you like to retarget this mesh to use the intended skeleton?\n")
+		TEXT("This will also delete the auto-generated skeleton and physics asset."),
+		InImportResult.ImportedMesh ? *InImportResult.ImportedMesh->GetName() : TEXT("Unknown"),
+		*InImportResult.GeneratedSkeletonPath,
+		*InImportResult.IntendedSkeletonPath
+	);
+	
+	EAppReturnType::Type UserChoice = FMessageDialog::Open(
+		EAppMsgType::YesNo,
+		FText::FromString(Message),
+		FText::FromString(TEXT("Skeleton Retargeting"))
+	);
+	
+	return UserChoice == EAppReturnType::Yes;
+}
+
+void UBridgeManager::RetargetSkeletalMeshToSkeleton(const FSkeletonImportResult& InImportResult, bool bDeleteGeneratedAssets, bool& bIsSuccessful, FString& OutMessage)
+{
+	bIsSuccessful = false;
+	
+	if (!InImportResult.ImportedMesh)
+	{
+		OutMessage = TEXT("No imported mesh to retarget");
+		return;
+	}
+	
+	if (InImportResult.IntendedSkeletonPath.IsEmpty())
+	{
+		OutMessage = TEXT("No intended skeleton path specified");
+		return;
+	}
+	
+	// Load the intended skeleton
+	USkeleton* IntendedSkeleton = LoadObject<USkeleton>(nullptr, *InImportResult.IntendedSkeletonPath);
+	if (!IntendedSkeleton)
+	{
+		OutMessage = FString::Printf(TEXT("Could not load intended skeleton: %s"), *InImportResult.IntendedSkeletonPath);
+		return;
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: === Retargeting Skeletal Mesh ==="));
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Mesh: %s"), *InImportResult.ImportedMesh->GetPathName());
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Target Skeleton: %s"), *IntendedSkeleton->GetPathName());
+	
+	USkeletalMesh* Mesh = InImportResult.ImportedMesh;
+	
+	// Store references to generated assets before reassignment
+	USkeleton* OldSkeleton = Mesh->GetSkeleton();
+	UPhysicsAsset* OldPhysicsAsset = Mesh->GetPhysicsAsset();
+	
+	// Check skeleton compatibility by comparing bone structure
+	const FReferenceSkeleton& MeshRefSkeleton = Mesh->GetRefSkeleton();
+	const FReferenceSkeleton& TargetRefSkeleton = IntendedSkeleton->GetReferenceSkeleton();
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Mesh has %d bones, Target skeleton has %d bones"),
+		MeshRefSkeleton.GetNum(), TargetRefSkeleton.GetNum());
+	
+	// Verify bone compatibility - check that all mesh bones exist in target skeleton
+	bool bBonesCompatible = true;
+	for (int32 BoneIdx = 0; BoneIdx < MeshRefSkeleton.GetNum(); ++BoneIdx)
+	{
+		FName BoneName = MeshRefSkeleton.GetBoneName(BoneIdx);
+		int32 TargetBoneIdx = TargetRefSkeleton.FindBoneIndex(BoneName);
+		
+		if (TargetBoneIdx == INDEX_NONE)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Bone '%s' not found in target skeleton"), *BoneName.ToString());
+			bBonesCompatible = false;
+		}
+	}
+	
+	if (!bBonesCompatible)
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Some bones are missing in target skeleton - will merge them"));
+	}
+	
+	// IMPORTANT: Order of operations for skeleton reassignment:
+	// 1. First merge the mesh's bones into the target skeleton
+	// 2. Mark skeleton dirty so merged bones persist
+	// 3. Then set the skeleton on the mesh
+	// 4. Rebuild mesh LOD info to use new skeleton
+	
+	// Step 1: Merge bones from mesh into target skeleton FIRST
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Merging mesh bones into target skeleton..."));
+	IntendedSkeleton->MergeAllBonesToBoneTree(Mesh);
+	IntendedSkeleton->MarkPackageDirty();
+	
+	// Step 2: Set the skeleton on the mesh
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Setting skeleton on mesh..."));
+	Mesh->SetSkeleton(IntendedSkeleton);
+	
+	// Step 3: Rebuild the mesh's ref skeleton to match the new skeleton
+	// This is critical - we need to rebuild the LOD info with correct bone indices
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Rebuilding mesh reference skeleton..."));
+	
+	// Get the mesh's ref skeleton and rebuild it from the target skeleton
+	FReferenceSkeleton& MeshRefSkel = const_cast<FReferenceSkeleton&>(Mesh->GetRefSkeleton());
+	
+	// Create bone map from mesh bones to skeleton bones
+	TArray<int32> BoneMap;
+	BoneMap.SetNum(MeshRefSkel.GetNum());
+	
+	const FReferenceSkeleton& SkeletonRefSkel = IntendedSkeleton->GetReferenceSkeleton();
+	for (int32 BoneIdx = 0; BoneIdx < MeshRefSkel.GetNum(); ++BoneIdx)
+	{
+		FName BoneName = MeshRefSkel.GetBoneName(BoneIdx);
+		int32 SkeletonBoneIdx = SkeletonRefSkel.FindBoneIndex(BoneName);
+		BoneMap[BoneIdx] = SkeletonBoneIdx;
+		
+		if (SkeletonBoneIdx != INDEX_NONE)
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("AssetsBridge: Bone '%s' mapped: mesh[%d] -> skeleton[%d]"), 
+				*BoneName.ToString(), BoneIdx, SkeletonBoneIdx);
+		}
+	}
+	
+	// Clear the physics asset (user may want to assign a shared one or regenerate)
+	Mesh->SetPhysicsAsset(nullptr);
+	
+	// Mark the mesh as dirty
+	Mesh->MarkPackageDirty();
+	
+	// Force a PostEditChange to rebuild all internal mesh data
+	Mesh->PostEditChange();
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Skeleton reassigned successfully"));
+	
+	// Delete auto-generated assets if requested
+	if (bDeleteGeneratedAssets)
+	{
+		// Delete the old skeleton ONLY if it was auto-generated during this import and different from intended
+		if (OldSkeleton && OldSkeleton != IntendedSkeleton && InImportResult.bNewSkeletonGenerated)
+		{
+			FString OldSkeletonPath = OldSkeleton->GetPathName();
+			
+			// Additional safety check: only delete if the path matches the generated path
+			if (OldSkeletonPath == InImportResult.GeneratedSkeletonPath)
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Deleting auto-generated skeleton: %s"), *OldSkeletonPath);
+				
+				// Close any editors using this asset
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(OldSkeleton);
+				
+				// Delete the asset
+				bool bDeleted = UEditorAssetLibrary::DeleteAsset(OldSkeletonPath);
+				if (bDeleted)
+				{
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Successfully deleted auto-generated skeleton"));
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Failed to delete auto-generated skeleton"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preserving skeleton (path mismatch - may be pre-existing): %s"), *OldSkeletonPath);
+			}
+		}
+		else if (OldSkeleton && OldSkeleton != IntendedSkeleton)
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preserving pre-existing skeleton: %s"), *OldSkeleton->GetPathName());
+		}
+		
+		// Delete the old physics asset ONLY if it was auto-generated during this import
+		// Pre-existing physics assets should be preserved
+		if (OldPhysicsAsset && InImportResult.bNewPhysicsAssetGenerated)
+		{
+			FString OldPhysicsPath = OldPhysicsAsset->GetPathName();
+			
+			// Additional safety check: only delete if the path matches the generated path
+			if (OldPhysicsPath == InImportResult.GeneratedPhysicsAssetPath)
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Deleting auto-generated physics asset: %s"), *OldPhysicsPath);
+				
+				// Close any editors using this asset
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(OldPhysicsAsset);
+				
+				// Delete the asset
+				bool bDeleted = UEditorAssetLibrary::DeleteAsset(OldPhysicsPath);
+				if (bDeleted)
+				{
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Successfully deleted auto-generated physics asset"));
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Failed to delete auto-generated physics asset"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preserving physics asset (path mismatch - may be pre-existing): %s"), *OldPhysicsPath);
+			}
+		}
+		else if (OldPhysicsAsset)
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Preserving pre-existing physics asset: %s"), *OldPhysicsAsset->GetPathName());
+		}
+	}
+	
+	bIsSuccessful = true;
+	OutMessage = FString::Printf(TEXT("Successfully retargeted mesh to skeleton: %s"), *IntendedSkeleton->GetName());
+	
+	// Show notification to user
+	UAssetsBridgeTools::ShowNotification(OutMessage);
+}
+
+UObject* UBridgeManager::RelocateImportedAsset(UObject* InImportedAsset, const FString& InIntendedPath, bool& bIsSuccessful, FString& OutMessage)
+{
+	if (!InImportedAsset)
+	{
+		bIsSuccessful = false;
+		OutMessage = TEXT("No asset to relocate");
+		return nullptr;
+	}
+	
+	// Get current asset path
+	FString CurrentPath = InImportedAsset->GetPathName();
+	FString CurrentPackagePath = InImportedAsset->GetOutermost()->GetPathName();
+	FString AssetName = InImportedAsset->GetName();
+	
+	// Build intended full path (package path + asset name)
+	FString IntendedPackagePath = InIntendedPath;
+	FString IntendedFullPath = IntendedPackagePath + TEXT(".") + AssetName;
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Checking if relocation needed"));
+	UE_LOG(LogTemp, Log, TEXT("  Current: %s"), *CurrentPath);
+	UE_LOG(LogTemp, Log, TEXT("  Intended: %s"), *IntendedFullPath);
+	
+	// Check if already at correct location
+	if (CurrentPackagePath == IntendedPackagePath)
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Asset already at correct location"));
+		bIsSuccessful = true;
+		OutMessage = TEXT("Asset already at correct location");
+		return InImportedAsset;
+	}
+	
+	// Store original folder for cleanup later
+	FString OriginalFolder = FPaths::GetPath(CurrentPackagePath);
+	
+	// Check if destination already exists
+	if (UEditorAssetLibrary::DoesAssetExist(IntendedPackagePath))
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Destination already exists, deleting old asset first"));
+		
+		// Load and close editors for existing asset
+		UObject* ExistingAsset = UEditorAssetLibrary::LoadAsset(IntendedPackagePath);
+		if (ExistingAsset)
+		{
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(ExistingAsset);
+		}
+		
+		// Delete existing asset
+		if (!UEditorAssetLibrary::DeleteAsset(IntendedPackagePath))
+		{
+			bIsSuccessful = false;
+			OutMessage = FString::Printf(TEXT("Failed to delete existing asset at: %s"), *IntendedPackagePath);
+			return InImportedAsset;
+		}
+	}
+	
+	// Rename/move the asset to the intended location
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Relocating asset from %s to %s"), *CurrentPackagePath, *IntendedPackagePath);
+	
+	if (UEditorAssetLibrary::RenameAsset(CurrentPackagePath, IntendedPackagePath))
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Asset relocated successfully"));
+		
+		// Clean up empty folders
+		CleanupEmptyInterchangeFolders(OriginalFolder);
+		
+		// Load the relocated asset
+		UObject* RelocatedAsset = UEditorAssetLibrary::LoadAsset(IntendedPackagePath);
+		if (RelocatedAsset)
+		{
+			bIsSuccessful = true;
+			OutMessage = FString::Printf(TEXT("Asset relocated to: %s"), *IntendedPackagePath);
+			return RelocatedAsset;
+		}
+		else
+		{
+			bIsSuccessful = false;
+			OutMessage = TEXT("Asset relocated but failed to reload");
+			return nullptr;
+		}
+	}
+	else
+	{
+		bIsSuccessful = false;
+		OutMessage = FString::Printf(TEXT("Failed to relocate asset from %s to %s"), *CurrentPackagePath, *IntendedPackagePath);
+		return InImportedAsset;
+	}
+}
+
+void UBridgeManager::CleanupEmptyInterchangeFolders(const FString& InFolderPath)
+{
+	if (InFolderPath.IsEmpty())
+	{
+		return;
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Checking folder for cleanup: %s"), *InFolderPath);
+	
+	// Get all assets in this folder (non-recursive)
+	TArray<FString> AssetsInFolder = UEditorAssetLibrary::ListAssets(InFolderPath, false, false);
+	
+	if (AssetsInFolder.Num() == 0)
+	{
+		// Folder is empty, try to delete it
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Folder is empty, attempting to delete: %s"), *InFolderPath);
+		
+		if (UEditorAssetLibrary::DeleteDirectory(InFolderPath))
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Successfully deleted empty folder: %s"), *InFolderPath);
+			
+			// Recursively check parent folder
+			FString ParentFolder = FPaths::GetPath(InFolderPath);
+			if (!ParentFolder.IsEmpty() && ParentFolder != TEXT("/Game"))
+			{
+				CleanupEmptyInterchangeFolders(ParentFolder);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Could not delete folder (may have subfolders): %s"), *InFolderPath);
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Folder not empty (%d assets), skipping: %s"), AssetsInFolder.Num(), *InFolderPath);
+	}
 }

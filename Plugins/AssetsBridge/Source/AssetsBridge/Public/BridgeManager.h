@@ -7,7 +7,40 @@
 
 class UAssetImportTask;
 class UFactory;
+class USkeleton;
+class USkeletalMesh;
+class UPhysicsAsset;
 
+/** Result of post-import skeleton analysis */
+USTRUCT(BlueprintType)
+struct FSkeletonImportResult
+{
+	GENERATED_BODY()
+
+	/** Whether a new skeleton was auto-generated during import */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	bool bNewSkeletonGenerated = false;
+
+	/** Whether a new physics asset was auto-generated during import */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	bool bNewPhysicsAssetGenerated = false;
+
+	/** Path to the intended/target skeleton (from export metadata) */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	FString IntendedSkeletonPath;
+
+	/** Path to the auto-generated skeleton (if any) */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	FString GeneratedSkeletonPath;
+
+	/** Path to the auto-generated physics asset (if any) */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	FString GeneratedPhysicsAssetPath;
+
+	/** The imported skeletal mesh */
+	UPROPERTY(BlueprintReadOnly, Category = "AssetsBridge")
+	USkeletalMesh* ImportedMesh = nullptr;
+};
 
 /**
  * 
@@ -117,9 +150,58 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Asset Bridge Tools")
 	static UObject* ImportAsset(FString InSourcePath, FString InDestPath, FString InMeshType, FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage);
 
+	/**
+	 * Analyzes a skeletal mesh after import to detect if a new skeleton/physics asset was auto-generated.
+	 * @param InImportedMesh The skeletal mesh that was just imported
+	 * @param InIntendedSkeletonPath The skeleton path that was specified in the export metadata
+	 * @return Analysis result containing detected auto-generated assets
+	 */
+	UFUNCTION(BlueprintCallable, Category="Asset Bridge Tools")
+	static FSkeletonImportResult AnalyzeSkeletalMeshImport(USkeletalMesh* InImportedMesh, const FString& InIntendedSkeletonPath);
+
+	/**
+	 * Retargets a skeletal mesh to use a different skeleton, cleaning up auto-generated assets.
+	 * @param InImportResult The analysis result from AnalyzeSkeletalMeshImport
+	 * @param bDeleteGeneratedAssets If true, deletes the auto-generated skeleton and physics asset
+	 * @param bIsSuccessful Output: whether the operation succeeded
+	 * @param OutMessage Output: verbose status message
+	 */
+	UFUNCTION(BlueprintCallable, Category="Asset Bridge Tools")
+	static void RetargetSkeletalMeshToSkeleton(const FSkeletonImportResult& InImportResult, bool bDeleteGeneratedAssets, bool& bIsSuccessful, FString& OutMessage);
+
+	/**
+	 * Shows a dialog asking the user if they want to retarget the mesh to the intended skeleton.
+	 * @param InImportResult The analysis result showing what was auto-generated
+	 * @return True if user wants to retarget, false otherwise
+	 */
+	UFUNCTION(BlueprintCallable, Category="Asset Bridge Tools")
+	static bool PromptUserForSkeletonRetarget(const FSkeletonImportResult& InImportResult);
+
 private:
 	static UObject* ProcessTask(UAssetImportTask* ImportTask, bool& bIsSuccessful, FString& OutMessage);
 	static UAssetImportTask* CreateImportTask(FString InSourcePath, FString InDestPath, FString InMeshType,
 	                                          FString InSkeletonPath, bool& bIsSuccessful, FString& OutMessage);
 	static void ExportObject(FString InObjInternalPath, FString InDestPath, bool& bIsSuccessful, FString& OutMessage);
+
+	/**
+	 * Finds auto-generated skeleton and physics assets near the imported mesh path.
+	 * Interchange creates these in a subfolder structure like: MeshPath/SkeletalMeshes/MeshName_Skeleton
+	 */
+	static void FindGeneratedAssetsNearMesh(USkeletalMesh* InMesh, USkeleton*& OutGeneratedSkeleton, UPhysicsAsset*& OutGeneratedPhysicsAsset);
+
+	/**
+	 * Relocates an imported asset from the Interchange subfolder structure to the intended destination path.
+	 * @param InImportedAsset The asset to relocate
+	 * @param InIntendedPath The intended destination path (without asset name suffix)
+	 * @param bIsSuccessful Output: whether the operation succeeded
+	 * @param OutMessage Output: verbose status message
+	 * @return The relocated asset (may be same as input if already at correct location)
+	 */
+	static UObject* RelocateImportedAsset(UObject* InImportedAsset, const FString& InIntendedPath, bool& bIsSuccessful, FString& OutMessage);
+
+	/**
+	 * Deletes empty folders left behind after relocating assets from Interchange subfolder structure.
+	 * @param InFolderPath The folder path to check and delete if empty
+	 */
+	static void CleanupEmptyInterchangeFolders(const FString& InFolderPath);
 };
