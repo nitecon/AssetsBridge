@@ -1,0 +1,203 @@
+name: Release AssetsBridge Plugin
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+env:
+  PLUGIN_NAME: AssetsBridge
+
+jobs:
+  # Build source release on main branch push
+  source-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Plugin Package
+        run: |
+          mkdir -p release
+          # Copy plugin files, excluding build artifacts
+          rsync -av --exclude='Binaries/' \
+                    --exclude='Intermediate/' \
+                    --exclude='DerivedDataCache/' \
+                    --exclude='.idea/' \
+                    --exclude='.vs/' \
+                    Plugins/AssetsBridge/ release/AssetsBridge/
+          
+      - name: Create Source Zip
+        run: |
+          cd release
+          zip -r ../AssetsBridge-source.zip AssetsBridge/
+
+      - name: Delete existing source release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete source --yes || true
+          git push origin :refs/tags/source || true
+
+      - name: Create Source Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: source
+          name: "Latest Source"
+          body: |
+            ## Latest Source Build
+            
+            This is the latest development version from the `main` branch.
+            
+            **Note:** This is a source-only release. You will need to compile the plugin yourself.
+            
+            ### Installation
+            1. Download `AssetsBridge-source.zip`
+            2. Extract to `YourProject/Plugins/AssetsBridge`
+            3. Open your project and enable the plugin
+            4. Restart the editor when prompted
+            
+            ### Requirements
+            - Unreal Engine 5.4 or later
+            - DatasmithImporter plugin (included with UE)
+            - EditorScriptingUtilities plugin (included with UE)
+            
+            **Last updated:** ${{ github.event.head_commit.timestamp }}
+          files: AssetsBridge-source.zip
+          prerelease: true
+          make_latest: false
+
+  # Build versioned releases on tag push
+  version-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    strategy:
+      matrix:
+        ue_version: ['5.4', '5.5', '5.6', '5.7']
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Version: $TAG"
+
+      - name: Prepare Plugin Package
+        run: |
+          mkdir -p release
+          # Copy plugin files, excluding build artifacts
+          rsync -av --exclude='Binaries/' \
+                    --exclude='Intermediate/' \
+                    --exclude='DerivedDataCache/' \
+                    --exclude='.idea/' \
+                    --exclude='.vs/' \
+                    Plugins/AssetsBridge/ release/AssetsBridge/
+
+      - name: Update uplugin for UE version
+        run: |
+          # Update EngineVersion in uplugin file
+          cd release/AssetsBridge
+          jq --arg ver "${{ matrix.ue_version }}.0" '.EngineVersion = $ver' AssetsBridge.uplugin > tmp.json
+          mv tmp.json AssetsBridge.uplugin
+
+      - name: Create Version Zip
+        run: |
+          cd release
+          zip -r ../AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}.zip AssetsBridge/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}
+          path: AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}.zip
+
+  # Create the release with all version artifacts
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: version-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: AssetsBridge-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          # Try to get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changes since $PREV_TAG:" > release_notes.md
+            echo "" >> release_notes.md
+            git log --pretty=format:"- %s" $PREV_TAG..HEAD >> release_notes.md
+          else
+            echo "Initial release" > release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.tag }}
+          name: "AssetsBridge v${{ steps.version.outputs.tag }}"
+          body: |
+            ## AssetsBridge v${{ steps.version.outputs.tag }}
+            
+            Bidirectional asset bridge between Blender and Unreal Engine.
+            
+            ### Downloads
+            Choose the version matching your Unreal Engine installation:
+            - `AssetsBridge-${{ steps.version.outputs.tag }}-UE5.4.zip` - For Unreal Engine 5.4.x
+            - `AssetsBridge-${{ steps.version.outputs.tag }}-UE5.5.zip` - For Unreal Engine 5.5.x
+            - `AssetsBridge-${{ steps.version.outputs.tag }}-UE5.6.zip` - For Unreal Engine 5.6.x
+            - `AssetsBridge-${{ steps.version.outputs.tag }}-UE5.7.zip` - For Unreal Engine 5.7.x
+            
+            ### Installation
+            1. Download the zip matching your UE version
+            2. Extract to `YourProject/Plugins/AssetsBridge`
+            3. Open your project and enable the plugin
+            4. Restart the editor when prompted
+            
+            ### Requirements
+            - DatasmithImporter plugin (included with UE)
+            - EditorScriptingUtilities plugin (included with UE)
+            
+            ---
+            
+            ### Changelog
+            ${{ steps.notes.outputs.notes || 'See commit history for changes.' }}
+          files: artifacts/*.zip
+          draft: false
+          prerelease: false
+          make_latest: true
