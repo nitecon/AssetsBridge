@@ -47,9 +47,18 @@ Both components are required for the full workflow:
 5. Restart the editor when prompted
 
 #### Option 2: Clone Repository
+
+> **Note:** This repository contains a complete Unreal project (required for Epic Marketplace submission). You can open the project directly to explore how AssetsBridge works, but you'll need to copy just the plugin folder to your own project.
+
 ```bash
-cd YourProject/Plugins
+# Clone the full project
 git clone https://github.com/nitecon/AssetsBridge.git
+
+# Open AssetsBridge.uproject to explore the plugin
+
+# To use in your project, copy the plugin folder:
+# Copy: AssetsBridge/Plugins/AssetsBridge
+# To:   YourProject/Plugins/AssetsBridge
 ```
 
 ### Blender Addon
