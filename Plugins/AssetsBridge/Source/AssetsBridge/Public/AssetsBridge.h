@@ -108,10 +108,8 @@ public:
 	/**
 	 * @brief Provides a means to retrieve the current selection that the user has made.
 	 */
-	UPROPERTY(BlueprintReadWrite, Category="AssetsBridge Data")
 	TArray<AActor*> CurrentSelection;
 
-	UFUNCTION(BlueprintCallable, Category="AssetsBridge Data")
 	FORCEINLINE TArray<AActor*> GetCurrentSelection() const { return CurrentSelection; }
 
 
