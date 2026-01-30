@@ -11,6 +11,10 @@
 #include "Developer/DesktopPlatform/Public/DesktopPlatformModule.h"
 #include "Engine/AssetManager.h"
 #include "Engine/SkinnedAssetCommon.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Animation/MorphTarget.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/FileHelper.h"
@@ -298,14 +302,28 @@ void UAssetsBridgeTools::WriteJson(FString FilePath, TSharedPtr<FJsonObject> Jso
 TArray<AActor*> UAssetsBridgeTools::GetWorldSelection()
 {
 	TArray<AActor*> OutActors;
-	// TODO: Add filter for static /skeletal meshes only.
 	USelection* SelectedActors = GEditor->GetSelectedActors();
 	for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 	{
 		AActor* Actor = Cast<AActor>(*Iter);
-		TArray<UStaticMeshComponent*> Components;
-		Actor->GetComponents(Components);
-		if (Components.Num() > 0)
+		if (!Actor)
+		{
+			continue;
+		}
+		
+		// Check for StaticMeshComponent with valid mesh
+		TArray<UStaticMeshComponent*> StaticMeshComponents;
+		Actor->GetComponents(StaticMeshComponents);
+		if (StaticMeshComponents.Num() > 0 && StaticMeshComponents[0]->GetStaticMesh())
+		{
+			OutActors.Add(Actor);
+			continue;
+		}
+		
+		// Check for SkeletalMeshComponent with valid mesh
+		TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+		Actor->GetComponents(SkeletalMeshComponents);
+		if (SkeletalMeshComponents.Num() > 0 && SkeletalMeshComponents[0]->GetSkeletalMeshAsset())
 		{
 			OutActors.Add(Actor);
 		}
@@ -408,18 +426,47 @@ TArray<FAssetData> UAssetsBridgeTools::GetAssetsFromActor(const AActor* InActor)
 TArray<FAssetDetails> UAssetsBridgeTools::GetWorldSelectedAssets()
 {
 	TArray<FAssetDetails> Items;
-	auto CurSelection = GEditor->GetSelectedActors();
-	TArray<TWeakObjectPtr<UObject>> Objects;
-	CurSelection->GetSelectedObjects(Objects);
-	for (TWeakObjectPtr<UObject> obj : Objects)
+	USelection* SelectedActors = GEditor->GetSelectedActors();
+	
+	for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 	{
-		FAssetData Item = GetAssetDataFromPath(obj->GetDetailedInfo());
-		if (Item != nullptr)
+		AActor* Actor = Cast<AActor>(*Iter);
+		if (!Actor)
 		{
-			FAssetDetails NewItem;
-			NewItem.ObjectAsset = Item;
-			NewItem.WorldObject = obj;
-			Items.Add(NewItem);
+			continue;
+		}
+		
+		UObject* MeshAsset = nullptr;
+		
+		// First check for StaticMeshComponent
+		TArray<UStaticMeshComponent*> StaticMeshComponents;
+		Actor->GetComponents(StaticMeshComponents);
+		if (StaticMeshComponents.Num() > 0 && StaticMeshComponents[0]->GetStaticMesh())
+		{
+			MeshAsset = StaticMeshComponents[0]->GetStaticMesh();
+		}
+		
+		// If no static mesh, check for SkeletalMeshComponent
+		if (!MeshAsset)
+		{
+			TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+			Actor->GetComponents(SkeletalMeshComponents);
+			if (SkeletalMeshComponents.Num() > 0 && SkeletalMeshComponents[0]->GetSkeletalMeshAsset())
+			{
+				MeshAsset = SkeletalMeshComponents[0]->GetSkeletalMeshAsset();
+			}
+		}
+		
+		if (MeshAsset)
+		{
+			FAssetData Item = GetAssetDataFromPath(MeshAsset->GetPathName());
+			if (Item.IsValid())
+			{
+				FAssetDetails NewItem;
+				NewItem.ObjectAsset = Item;
+				NewItem.WorldObject = Actor;
+				Items.Add(NewItem);
+			}
 		}
 	}
 	return Items;

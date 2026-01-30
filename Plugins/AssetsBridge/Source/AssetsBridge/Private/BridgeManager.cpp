@@ -25,6 +25,10 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 // For skeleton compatibility check
 #include "Engine/SkinnedAssetCommon.h"
+// For iterating world actors and updating mesh components
+#include "EngineUtils.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 
 UBridgeManager::UBridgeManager()
 {
@@ -582,6 +586,85 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 			else if (SkeletalMesh)
 			{
 				SkeletalMesh->MarkPackageDirty();
+			}
+			
+			// Update world actors that use this mesh to refresh their materials
+			// This fixes the issue where actors in the viewport lose materials after reimport
+			UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (EditorWorld)
+			{
+				int32 UpdatedActorCount = 0;
+				
+				if (StaticMesh)
+				{
+					// Find all actors with StaticMeshComponents using this mesh
+					for (TActorIterator<AActor> ActorIt(EditorWorld); ActorIt; ++ActorIt)
+					{
+						AActor* Actor = *ActorIt;
+						if (!Actor) continue;
+						
+						TArray<UStaticMeshComponent*> MeshComponents;
+						Actor->GetComponents(MeshComponents);
+						
+						for (UStaticMeshComponent* MeshComp : MeshComponents)
+						{
+							if (MeshComp && MeshComp->GetStaticMesh() == StaticMesh)
+							{
+								// Clear all material overrides so the component uses the mesh asset's materials
+								// This is the key fix - after reimport, the component may have stale overrides
+								for (int32 MatIdx = 0; MatIdx < StaticMesh->GetStaticMaterials().Num(); MatIdx++)
+								{
+									// Setting to nullptr clears the override and uses the mesh asset's material
+									MeshComp->SetMaterial(MatIdx, nullptr);
+								}
+								
+								// Force a refresh of the component's rendering
+								MeshComp->MarkRenderStateDirty();
+								UpdatedActorCount++;
+								
+								UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Refreshed materials on world actor '%s' (StaticMeshComponent)"), 
+									*Actor->GetActorLabel());
+							}
+						}
+					}
+				}
+				else if (SkeletalMesh)
+				{
+					// Find all actors with SkeletalMeshComponents using this mesh
+					for (TActorIterator<AActor> ActorIt(EditorWorld); ActorIt; ++ActorIt)
+					{
+						AActor* Actor = *ActorIt;
+						if (!Actor) continue;
+						
+						TArray<USkeletalMeshComponent*> MeshComponents;
+						Actor->GetComponents(MeshComponents);
+						
+						for (USkeletalMeshComponent* MeshComp : MeshComponents)
+						{
+							if (MeshComp && MeshComp->GetSkeletalMeshAsset() == SkeletalMesh)
+							{
+								// Clear all material overrides so the component uses the mesh asset's materials
+								for (int32 MatIdx = 0; MatIdx < SkeletalMesh->GetMaterials().Num(); MatIdx++)
+								{
+									MeshComp->SetMaterial(MatIdx, nullptr);
+								}
+								
+								// Force a refresh of the component's rendering
+								MeshComp->MarkRenderStateDirty();
+								UpdatedActorCount++;
+								
+								UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Refreshed materials on world actor '%s' (SkeletalMeshComponent)"), 
+									*Actor->GetActorLabel());
+							}
+						}
+					}
+				}
+				
+				if (UpdatedActorCount > 0)
+				{
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Updated materials on %d world actor(s) using mesh '%s'"), 
+						UpdatedActorCount, *ImportedAsset->GetName());
+				}
 			}
 		}
 	}
