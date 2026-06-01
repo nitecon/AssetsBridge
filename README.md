@@ -24,6 +24,7 @@ Both components are required for the full workflow:
 - **Export to Blender** - Export Static Meshes and Skeletal Meshes to glTF format
 - **Import from Blender** - Read modified assets back with preserved metadata
 - **Material Tracking** - Maintains material assignments and slot order
+- **PBR Material Import** - When the Blender addon supplies baked textures, builds a `MI_<name>` material instance from the `M_ORM` master—wiring Base Color, ORM (occlusion/roughness/metallic), Normal, and Emissive maps—and assigns it to all slots on import. Non-baked assets keep the existing slot-restore behavior.
 - **Transform Preservation** - Keeps world position, rotation, and scale
 - **Morph Target Support** - Exports and reimports blend shapes/morph targets
 - **Skeleton References** - Preserves skeleton paths for skeletal mesh reimport
@@ -31,6 +32,7 @@ Both components are required for the full workflow:
 ### Blender Addon
 - **Bidirectional JSON Protocol** - `from-unreal.json` and `from-blender.json` coordinate transfers
 - **Mesh Tools** - Split meshes, assign UE5 skeletons, set export paths
+- **PBR Texture Baking** - Bakes materials to UE-ready maps (Base Color, packed ORM, Normal, Emissive) that the Unreal plugin imports into an `M_ORM` material instance (see the [Blender addon](https://github.com/nitecon/assetsbridge-addon) for details)
 - **Shape Key Transfer** - Selective transfer between meshes
 - **Collection Hierarchy** - Mirrors Unreal content browser structure
 - **Automatic Scene Configuration** - Sets up Blender for Unreal-compatible units
@@ -91,7 +93,7 @@ The bridge directory is where JSON files and exported glTF assets are stored for
 2. Select modified objects
 3. Click **Export Selected** in the AssetsBridge panel
 4. In Unreal: **AssetsBridge → Import from Blender**
-5. Assets are reimported with changes applied
+5. Assets are reimported with changes applied. If the addon baked PBR textures for an asset, a material instance is built from `M_ORM` and assigned automatically.
 
 ### Mesh Tools (Blender)
 - **Split to New Mesh** - Separate faces into new wearable pieces
@@ -107,6 +109,7 @@ The bridge directory is where JSON files and exported glTF assets are stored for
 | Skeletal Mesh | ✅ | ✅ | Includes skeleton and weights |
 | Morph Targets | ✅ | ✅ | Shape keys preserved by name |
 | Materials | ✅ | ✅ | Material slots tracked |
+| PBR Textures | ✅ | ✅ | Baked maps build an `M_ORM` material instance on import |
 
 ## Requirements
 
