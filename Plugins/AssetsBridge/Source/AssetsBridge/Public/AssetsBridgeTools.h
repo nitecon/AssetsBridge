@@ -74,6 +74,50 @@ struct FWorldData
 };
 
 USTRUCT(BlueprintType)
+struct FBridgeTexture
+{
+	GENERATED_BODY()
+
+	/** Absolute disk path to the baked PNG. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FString File = "";
+
+	/** Target Unreal content folder for the imported texture (e.g. /Game/Meshes/Credit/Textures). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FString ContentPath = "";
+};
+
+USTRUCT(BlueprintType)
+struct FBridgeTextureSet
+{
+	GENERATED_BODY()
+
+	/** BaseColor (sRGB) -> master material 'BaseColor' parameter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FBridgeTexture BaseColor;
+
+	/** Packed ORM (linear, R=AO G=Roughness B=Metallic) -> master 'MRAO' parameter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FBridgeTexture Orm;
+
+	/** Tangent normal (DirectX) -> master 'Normal' parameter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FBridgeTexture Normal;
+
+	/** Emissive (sRGB) -> master 'Emissive Mask' parameter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FBridgeTexture Emissive;
+
+	/** Master material to instance (e.g. /Game/Materials/_Core/M_ORM). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FString Master = "";
+
+	/** Desired content path for the generated material instance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Texture")
+	FString MaterialInstance = "";
+};
+
+USTRUCT(BlueprintType)
 struct FExportAsset
 {
 	GENERATED_BODY()
@@ -129,6 +173,17 @@ struct FExportAsset
 	/** World transform data */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
 	FWorldData WorldData = FWorldData();
+
+	/** Baked PBR texture set (present when the Blender addon baked textures for this asset). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Assets Bridge|Object Details")
+	FBridgeTextureSet Textures;
+
+	/** True when at least one baked texture is present (gates the master-material instance workflow). */
+	bool HasTextures() const
+	{
+		return !Textures.BaseColor.File.IsEmpty() || !Textures.Orm.File.IsEmpty()
+			|| !Textures.Normal.File.IsEmpty() || !Textures.Emissive.File.IsEmpty();
+	}
 };
 
 USTRUCT(BlueprintType, Category="Assets Bridge|JSON")

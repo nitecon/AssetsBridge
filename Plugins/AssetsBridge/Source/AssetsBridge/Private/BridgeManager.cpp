@@ -4,6 +4,8 @@
 #include "BridgeManager.h"
 
 #include "AssetsBridgeTools.h"
+#include "PBRMaterialBuilder.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "ActorFactories/ActorFactory.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
 #include "EditorAssetLibrary.h"
@@ -533,10 +535,46 @@ void UBridgeManager::GenerateImport(bool& bIsSuccessful, FString& OutMessage)
 				Item.MaterialChangeset.Added.Num(),
 				Item.MaterialChangeset.Removed.Num(),
 				Item.MaterialChangeset.Unchanged.Num());
-			
-			// Restore unchanged materials (materials that existed before and still exist)
+
+			// If the Blender addon baked a PBR texture set, build a Material Instance of the
+			// project master material (M_ORM) and assign it to every slot. This takes precedence
+			// over the per-slot InternalPath restore below. Fully gated behind HasTextures(), so
+			// assets without a baked set follow the original path unchanged.
+			UMaterialInstanceConstant* GeneratedMI = nullptr;
+			if (Item.HasTextures())
+			{
+				const FString MeshPkgPath = FPackageName::GetLongPackagePath(ImportedAsset->GetOutermost()->GetName());
+				const FString FallbackTexDir = MeshPkgPath / TEXT("Textures");
+				FString BuildMsg;
+				GeneratedMI = UPBRMaterialBuilder::BuildMaterialInstance(
+					Item.Textures, OriginalName, FallbackTexDir, FString(), BuildMsg);
+				UE_LOG(LogTemp, Log, TEXT("AssetsBridge: PBR material instance: %s"), *BuildMsg);
+
+				if (GeneratedMI)
+				{
+					for (int32 SlotIdx = 0; SlotIdx < MatCount; SlotIdx++)
+					{
+						if (StaticMesh)
+						{
+							StaticMesh->SetMaterial(SlotIdx, GeneratedMI);
+						}
+						else if (SkeletalMesh)
+						{
+							SkeletalMesh->GetMaterials()[SlotIdx].MaterialInterface = GeneratedMI;
+						}
+					}
+					UE_LOG(LogTemp, Log, TEXT("AssetsBridge: Assigned %s to %d slot(s)"), *GeneratedMI->GetName(), MatCount);
+				}
+			}
+
+			// Restore unchanged materials (materials that existed before and still exist).
+			// Skipped when a baked material instance was generated above.
 			for (const FMaterialSlot& MatSlot : Item.MaterialChangeset.Unchanged)
 			{
+				if (GeneratedMI)
+				{
+					break;
+				}
 				if (MatSlot.Idx >= MatCount)
 				{
 					UE_LOG(LogTemp, Warning, TEXT("AssetsBridge: Material slot %d out of bounds (mesh has %d slots)"), MatSlot.Idx, MatCount);

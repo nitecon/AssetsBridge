@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 2,
-  "VersionName": "2.0",
+  "Version": 3,
+  "VersionName": "2.1",
   "EngineVersion": "5.7.0",
   "FriendlyName": "AssetsBridge",
   "Description": "Bidirectional asset bridge between Blender and Unreal Engine.",
