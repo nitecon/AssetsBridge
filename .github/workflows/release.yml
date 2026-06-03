@@ -20,7 +20,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare Plugin Package
         run: |
@@ -32,7 +32,7 @@ jobs:
                     --exclude='.idea/' \
                     --exclude='.vs/' \
                     Plugins/AssetsBridge/ release/AssetsBridge/
-          
+
       - name: Create Source Zip
         run: |
           cd release
@@ -47,7 +47,7 @@ jobs:
           git push origin :refs/tags/source || true
 
       - name: Create Source Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: source
           name: "Latest Source"
@@ -87,7 +87,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Get version from tag
         id: version
@@ -120,7 +120,7 @@ jobs:
           zip -r ../AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}.zip AssetsBridge/
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}
           path: AssetsBridge-${{ steps.version.outputs.tag }}-UE${{ matrix.ue_version }}.zip
@@ -135,7 +135,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Get version from tag
         id: version
@@ -144,7 +144,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: AssetsBridge-*
@@ -167,7 +167,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.tag }}
           name: "AssetsBridge v${{ steps.version.outputs.tag }}"
